@@ -14,12 +14,13 @@ What to emit:
 - A good reflection captures meaning that should survive after individual observations are dropped from active compacted memory.
 - High and critical observations deserve careful review, not automatic reflection. Many high observations are still active working evidence and should remain observations until completed, superseded, or generalized into a durable decision, invariant, or rationale.
 - Ignore low observations unless a repeated pattern across many low observations is itself significant.
-- Do not lightly reword existing reflections. Rewording creates a separate reflection, so only use different wording when the durable meaning is materially different, more specific, or corrects/refines an existing reflection.
-- Do not emit update-style records or provenance metadata. Reflections are plain durable facts, not patches.
+- Check every candidate against current reflections. If an existing reflection already states the same fact, even in different words or with less detail, emit nothing. Rewording creates a separate reflection, so never restate an existing fact with more detail or a newer status.
+- Do not emit update-style records or provenance metadata. Reflections are plain durable facts, not patches. Never cite reflection ids or write "this supersedes", "as noted earlier", or similar. When a durable fact changed, state the new fact on its own.
+- Write facts that stay true until the world changes, not snapshots of progress. If a fact is only true until a pending step finishes, it is working state: leave it as an observation.
 - It is fine to emit zero reflections when nothing new is stable enough; in that case do not call the tool and reply briefly.
 
 Decision procedure:
-1. First reject observations that are transient, low-level, partial, routine, or only useful as current working state.
+1. First reject observations that are transient, low-level, partial, routine, only useful as current working state, or describe work that is pending, in progress, or delegated.
 2. From the remaining observations, identify only durable orientation facts: user preferences, constraints, corrections, decisions, invariants, completed outcomes, long-lived blockers, stable project goals, or rationale that future runs must know.
 3. Apply the future-agent utility test: would a future assistant need this fact automatically in compressed context to avoid a wrong decision, repeated work, or user-preference violation?
 4. If the candidate fails that future-agent utility test, leave it as an observation.
@@ -38,7 +39,7 @@ Focus on:
 - Project goals, architecture, technical decisions, and the rationale behind them.
 - Recurring user behavior or preferences that will matter in future turns.
 - Completed outcomes future runs must not redo.
-- Durable blockers, invariants, and open decisions that should survive compaction.
+- Invariants, and long-lived blockers or open decisions that stay open regardless of in-flight work.
 
 Support ids and coverage stewardship:
 - Every reflection must include supportingObservationIds from the current observations list.
@@ -58,8 +59,10 @@ Reflection content rules:
 - Single line of plain prose. No markdown, no bullets, no code fences, no XML/HTML tags, no emojis.
 - No timestamp, no priority marker, no bracketed tags, no "key: value" fields, no JSON.
 - Lead with the fact or pattern; include the reason or mechanism when known so future readers can judge edge cases.
+- Keep each reflection short: one or two sentences, usually under 50 words. State the conclusion and its reason, not the story. Leave incident timelines, commit hashes, file lists, agent or run names, and step-by-step fixes in the observations; recall recovers them.
+- Never use status wording: "currently", "as of <date>", "pending", "in progress", "in flight", "not yet", "uncommitted", "unresolved", "being fixed", "delegated to".
 - Preserve user assertions exactly. Use the user's exact words when non-standard.
-- Preserve named identifiers, paths, commands, package names, error codes, dates, decisions, constraints, and rationale when those details are part of the durable meaning.
+- Preserve the named identifiers, paths, commands, package names, error codes, decisions, constraints, and rationale a future assistant needs to act on the fact; drop the rest.
 
 Examples:
 - BAD: User discussed databases.
@@ -67,7 +70,10 @@ Examples:
 - BAD: User asked about database setup.
 - GOOD: User stated they use Postgres for the project database.
 - BAD: User ran npm test and it failed.
-- GOOD: The test suite currently fails because auth middleware rejects expired JWT fixtures.
+- GOOD: Auth middleware rejects expired JWTs, so test fixtures must mint tokens at test time.
+- BAD: As of 2026-03-02 the migration is still pending review and the rollback fix was delegated to a helper.
+- BAD: The upload retry fix (commit 4f2a9c1) landed after the flaky upload test was traced through three failed attempts to a shared temp directory; this supersedes the earlier note about the retry bug.
+- GOOD: Upload tests must each use their own temp directory; a shared directory made them flaky.
 - BAD: User prefers React Query.
 - BAD: User switched from SWR.
 - GOOD: User chose React Query over SWR for server-state caching.
@@ -78,4 +84,5 @@ Examples:
 - BAD: Observation aaaaaaaaaaaa says the user likes short answers.
 - GOOD: User prefers short answers without generic summaries.
 - ZERO REFLECTIONS: The only new observations are files inspected, commands run, failed attempts, partial implementation, transient debugging, or current working state with no durable conclusion yet.
-- ZERO REFLECTIONS: The only new observations are routine command outputs, transient debugging attempts, or partial work with no durable conclusion yet.`;
+- ZERO REFLECTIONS: The only new observations are routine command outputs, transient debugging attempts, or partial work with no durable conclusion yet.
+- ZERO REFLECTIONS: A candidate restates an existing reflection with more detail, a newer status, or different wording.`;
