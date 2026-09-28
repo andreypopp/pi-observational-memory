@@ -10,6 +10,7 @@ import {
 	oldV2CompactionDetails,
 	oldV2ObservationEntry,
 	reflection,
+	reflectionsDroppedEntry,
 	reflectionsRecordedEntry,
 	textCustomMessage,
 	type TestEntry,
@@ -168,5 +169,25 @@ describe("V3 compaction hook", () => {
 			"Observational memory: another compaction is already in progress; cancelling duplicate",
 			"warning",
 		);
+	});
+
+	it("renders a full-fold summary without retired reflections", async () => {
+		const obs1 = observation("aaaaaaaaaaaa", { sourceEntryIds: ["raw-1"], tokenCount: 10 });
+		const kept = reflection("eeeeeeeeeeee", ["aaaaaaaaaaaa"], { content: "Kept reflection" });
+		const retired = reflection("ffffffffffff", ["aaaaaaaaaaaa"], { content: "Retired reflection" });
+		const entries = [
+			textCustomMessage("raw-1", "aaaa"),
+			observationsRecordedEntry("om-obs", { observations: [obs1], coversUpToId: "raw-1" }),
+			reflectionsRecordedEntry("om-ref", { reflections: [kept, retired], coversUpToId: "raw-1" }),
+			reflectionsDroppedEntry("om-retire", { reflectionIds: ["ffffffffffff"], coversUpToId: "raw-1" }),
+		];
+		const { run } = setup({ entries, observationsPoolMaxTokens: 10 });
+
+		const result = await run("raw-1") as any;
+
+		expect(result.compaction.details.fullFold).toBe(true);
+		expect(result.compaction.details.reflections).toEqual([kept]);
+		expect(result.compaction.summary).toContain("[eeeeeeeeeeee] Kept reflection");
+		expect(result.compaction.summary).not.toContain("Retired reflection");
 	});
 });

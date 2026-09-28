@@ -125,10 +125,11 @@ type Reflection = {
   content: string;
   supportingObservationIds: string[];
   tokenCount: number;
+  replaces?: string[];
 }
 ```
 
-The reflector must cite valid active observation ids.
+The reflector must cite valid active observation ids. `replaces` lists the reflections a replacement supersedes; records without it stay valid.
 
 ### Observations dropped
 
@@ -141,6 +142,19 @@ data: {
 ```
 
 Drops are tombstones. They remove ids from active observations but do not delete ledger history.
+
+### Reflections dropped
+
+```ts
+customType: "om.reflections.dropped"
+data: {
+  reflectionIds: string[];
+  replacedBy?: string;
+  coversUpToId: string;
+}
+```
+
+Retirements are tombstones for reflection ids, kept even when the reflection record is unknown or recorded later; nothing un-retires a reflection. The fold keeps every reflection record (`reflections`, `reflectionsById`) and exposes `activeReflections`, `retiredReflectionIds`, and `reflectionReplacedBy`. Observer, reflector, and dropper inputs, dropper coverage, and projections use active reflections only. Retirements do not advance any progress clock.
 
 ### Folded compaction details
 
@@ -244,7 +258,7 @@ V3 uses projection helpers so commands, compaction, and recall do not each inven
 
 ### Full projection
 
-Full projection folds valid V3 observations, reflections, and drops from branch root through the requested boundary. Memory entries are included by resolving their `data.coversUpToId` marker against the boundary, not by the physical position of the `om.*` custom entry. Old V2 entries/details, invalid V3-shaped entries, and dangling coverage markers are ignored.
+Full projection folds valid V3 observations, reflections, drops, and reflection retirements from branch root through the requested boundary. Memory entries are included by resolving their `data.coversUpToId` marker against the boundary, not by the physical position of the `om.*` custom entry. Old V2 entries/details, invalid V3-shaped entries, and dangling coverage markers are ignored.
 
 ### Visible projection
 
@@ -252,7 +266,7 @@ Visible projection without a boundary reads the latest V3 `om.folded` compaction
 
 ### Compaction projection
 
-When compaction runs, the projection helper decides whether this compaction is a full fold. It first builds the normal compaction projection: observations whose `coversUpToId` reaches `firstKeptEntryId`, with reflection/drop effects held stable from the latest full-fold boundary. If there is no previous full-fold boundary, normal compaction includes observations only and excludes reflections/drops. It sums that projection's active observation `tokenCount`; if the total is at or above `observationsPoolMaxTokens`, it performs a full fold through `firstKeptEntryId`, applying observations, reflections, and drops by coverage marker. Otherwise, it keeps the normal projection.
+When compaction runs, the projection helper decides whether this compaction is a full fold. It first builds the normal compaction projection: observations whose `coversUpToId` reaches `firstKeptEntryId`, with reflection/retirement/drop effects held stable from the latest full-fold boundary. If there is no previous full-fold boundary, normal compaction includes observations only and excludes reflections/drops. It sums that projection's active observation `tokenCount`; if the total is at or above `observationsPoolMaxTokens`, it performs a full fold through `firstKeptEntryId`, applying observations, reflections, retirements, and drops by coverage marker. Otherwise, it keeps the normal projection. Retirements never trigger a full fold by themselves; they become visible at the next one.
 
 ### Diff projection
 
@@ -288,7 +302,7 @@ The renderer is deterministic. It does not call a model and does not rewrite mem
 Shows:
 
 - recorded/dropped/visible observation counts, with plain `+N` / `-N` visible-vs-full drift suffixes when drift exists;
-- recorded/visible reflection counts, with a plain `+N` drift suffix when full memory has extra reflections;
+- recorded/visible reflection counts, with a plain `+N` drift suffix when full memory has extra reflections; once any reflection is retired, the line also shows retired/active counts and a `-N` suffix for visible reflections retired in full memory;
 - next observation/reflection/compaction token progress and drop coverage since the last successful drop;
 - visible observation pool pressure against `observationsPoolMaxTokens` from the current compaction projection;
 - active observation pool pressure against `observationsPoolTargetTokens` from folded active observations;
@@ -306,7 +320,7 @@ Clipboard copy uses platform clipboard commands (`pbcopy`, `clip`, `wl-copy`, `x
 
 ### `/om:view full`
 
-Shows full V3 ledger truth at branch tip and attempts to copy the rendered memory text to the clipboard using the same success/failure behavior as default `/om:view`.
+Shows full V3 ledger truth at branch tip, without retired reflections, and attempts to copy the rendered memory text to the clipboard using the same success/failure behavior as default `/om:view`. When reflections are retired, it adds a `Retired reflections: N` line to the shown output; that line is not copied.
 
 ## Recall flow
 
@@ -314,11 +328,11 @@ The agent-facing `recall` tool accepts a 12-character lowercase hex id.
 
 1. Validate id shape.
 2. Read the current branch.
-3. Index V3 observations, reflections, and drops from ledger history.
+3. Index V3 observations, reflections, drops, and reflection retirements from ledger history.
 4. Match the id against observations and reflections.
 5. For observations, mark status as `active` or `dropped`.
 6. Resolve observation source entries from `sourceEntryIds`.
-7. For reflections, resolve supporting observations and their sources.
+7. For reflections, mark retired ones `retired` with `replaced by [id]` when known, list the retired reflections named by `replaces`, and resolve supporting observations (active or dropped) and their sources.
 8. Return exact evidence plus diagnostics for missing/non-source entries.
 
 Recall ignores old V2 memory by construction because it indexes only V3 ledger entry types.
@@ -345,5 +359,5 @@ V3 does not use V2 state shapes. Old V2 custom memory entries, old V2 compaction
 - Observer input is raw/source entries only.
 - `coversUpToId` is a progress/projection watermark, not provenance.
 - Kept observations and reflections are rendered without paraphrase.
-- Dropped observations remain recallable from ledger history.
+- Dropped observations and retired reflections remain recallable from ledger history.
 - Old V2 memory is ignored rather than migrated.

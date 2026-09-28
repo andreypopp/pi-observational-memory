@@ -15,6 +15,7 @@ import {
 	observationsRecordedEntry,
 	oldV2CompactionDetails,
 	reflection,
+	reflectionsDroppedEntry,
 	reflectionsRecordedEntry,
 	textCustomMessage,
 } from "./fixtures/session.js";
@@ -203,5 +204,105 @@ describe("session-ledger V3 projections", () => {
 
 		expect(diff.observationsOnlyInFull.map((obs) => obs.id)).toEqual(["bbbbbbbbbbbb"]);
 		expect(diff.reflectionsOnlyInFull.map((ref) => ref.id)).toEqual(["eeeeeeeeeeee"]);
+	});
+
+	it("full projection excludes reflections retired through the boundary", () => {
+		const obs1 = observation("aaaaaaaaaaaa");
+		const ref1 = reflection("eeeeeeeeeeee", ["aaaaaaaaaaaa"]);
+		const ref2 = reflection("ffffffffffff", ["aaaaaaaaaaaa"], { replaces: ["eeeeeeeeeeee"] });
+		const entries = [
+			textCustomMessage("raw-1", "aaaa"),
+			observationsRecordedEntry("om-obs-1", { observations: [obs1], coversUpToId: "raw-1" }),
+			reflectionsRecordedEntry("om-ref-1", { reflections: [ref1], coversUpToId: "raw-1" }),
+			textCustomMessage("raw-2", "bbbb"),
+			reflectionsRecordedEntry("om-ref-2", { reflections: [ref2], coversUpToId: "raw-2" }),
+			reflectionsDroppedEntry("om-retire-1", { reflectionIds: ["eeeeeeeeeeee"], replacedBy: "ffffffffffff", coversUpToId: "raw-2" }),
+		];
+
+		expect(fullProjection(entries).reflections).toEqual([ref2]);
+		expect(fullProjection(entries, "raw-1").reflections).toEqual([ref1]);
+	});
+
+	it("retirement tombstones apply to reflections covered after the retirement entry", () => {
+		const ref1 = reflection("eeeeeeeeeeee", ["aaaaaaaaaaaa"]);
+		const entries = [
+			textCustomMessage("raw-1", "aaaa"),
+			reflectionsDroppedEntry("om-retire-1", { reflectionIds: ["eeeeeeeeeeee"], coversUpToId: "raw-1" }),
+			reflectionsRecordedEntry("om-ref-1", { reflections: [ref1], coversUpToId: "raw-1" }),
+		];
+
+		expect(fullProjection(entries).reflections).toEqual([]);
+	});
+
+	it("normal compaction keeps retirements frozen at the latest full-fold boundary until the next full fold", () => {
+		const obs1 = observation("aaaaaaaaaaaa", { tokenCount: 5 });
+		const obs2 = observation("bbbbbbbbbbbb", { tokenCount: 5 });
+		const ref1 = reflection("eeeeeeeeeeee", ["aaaaaaaaaaaa"]);
+		const ref2 = reflection("ffffffffffff", ["aaaaaaaaaaaa"]);
+		const entries = [
+			textCustomMessage("raw-1", "aaaa"),
+			observationsRecordedEntry("om-obs-1", { observations: [obs1], coversUpToId: "raw-1" }),
+			reflectionsRecordedEntry("om-ref-1", { reflections: [ref1, ref2], coversUpToId: "raw-1" }),
+			reflectionsDroppedEntry("om-retire-1", { reflectionIds: ["ffffffffffff"], coversUpToId: "raw-1" }),
+			compactionEntry("cmp-full", { firstKeptEntryId: "raw-1", details: memoryDetails({ fullFold: true, observations: [obs1], reflections: [ref1] }) }),
+			textCustomMessage("raw-2", "bbbb"),
+			observationsRecordedEntry("om-obs-2", { observations: [obs2], coversUpToId: "raw-2" }),
+			reflectionsDroppedEntry("om-retire-2", { reflectionIds: ["eeeeeeeeeeee"], coversUpToId: "raw-2" }),
+		];
+
+		const normal = buildCompactionProjection(entries, "raw-2", { observationsPoolMaxTokens: 100 });
+		expect(normal.fullFold).toBe(false);
+		expect(normal.reflections).toEqual([ref1]);
+		expect(normal.details.reflections).toEqual([ref1]);
+
+		const full = buildCompactionProjection(entries, "raw-2", { observationsPoolMaxTokens: 10 });
+		expect(full.fullFold).toBe(true);
+		expect(full.reflections).toEqual([]);
+		expect(full.details.reflections).toEqual([]);
+	});
+
+	it("retirement alone does not force a full fold", () => {
+		const obs1 = observation("aaaaaaaaaaaa", { tokenCount: 5 });
+		const ref1 = reflection("eeeeeeeeeeee", ["aaaaaaaaaaaa"]);
+		const entries = [
+			textCustomMessage("raw-1", "aaaa"),
+			observationsRecordedEntry("om-obs-1", { observations: [obs1], coversUpToId: "raw-1" }),
+			reflectionsRecordedEntry("om-ref-1", { reflections: [ref1], coversUpToId: "raw-1" }),
+			compactionEntry("cmp-full", { firstKeptEntryId: "raw-1", details: memoryDetails({ fullFold: true, observations: [obs1], reflections: [ref1] }) }),
+			textCustomMessage("raw-2", "bbbb"),
+			reflectionsDroppedEntry("om-retire-1", { reflectionIds: ["eeeeeeeeeeee"], coversUpToId: "raw-2" }),
+		];
+
+		const result = buildCompactionProjection(entries, "raw-2", { observationsPoolMaxTokens: 100 });
+
+		expect(result.fullFold).toBe(false);
+		expect(result.reflections).toEqual([ref1]);
+	});
+
+	it("reports reflections retired in full memory but still visible as drift", () => {
+		const ref1 = reflection("eeeeeeeeeeee", ["aaaaaaaaaaaa"]);
+		const ref2 = reflection("ffffffffffff", ["aaaaaaaaaaaa"]);
+		const visible = { observations: [], reflections: [ref1, ref2] };
+		const full = { observations: [], reflections: [ref2] };
+
+		expect(diffProjection(visible, full).reflectionsRetiredOnlyInFull).toEqual([ref1]);
+	});
+
+	it("projects sessions without retirement entries exactly as before", () => {
+		const obs1 = observation("aaaaaaaaaaaa", { tokenCount: 5 });
+		const ref1 = reflection("eeeeeeeeeeee", ["aaaaaaaaaaaa"]);
+		const entries = [
+			textCustomMessage("raw-1", "aaaa"),
+			observationsRecordedEntry("om-obs-1", { observations: [obs1], coversUpToId: "raw-1" }),
+			reflectionsRecordedEntry("om-ref-1", { reflections: [ref1], coversUpToId: "raw-1" }),
+		];
+
+		expect(fullProjection(entries)).toEqual({ observations: [obs1], reflections: [ref1] });
+		expect(buildCompactionProjection(entries, "raw-1", { observationsPoolMaxTokens: 5 })).toEqual({
+			fullFold: true,
+			observations: [obs1],
+			reflections: [ref1],
+			details: { type: "om.folded", version: 1, fullFold: true, observations: [obs1], reflections: [ref1] },
+		});
 	});
 });

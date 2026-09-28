@@ -439,6 +439,7 @@ async function runObserverStage(
 		});
 	}
 
+	// Full projection at the tip applies reflection retirements, so only active reflections reach the observer.
 	const memory = fullProjection(entries);
 	const priorReflections = memory.reflections.map(reflectionToSummaryLine);
 	const priorObservations = memory.observations.map(observationToSummaryLine);
@@ -539,7 +540,7 @@ async function runReflectorStage(
 		apiKey: worker.apiKey,
 		headers: worker.headers,
 		env: worker.env,
-		reflections: folded.reflections,
+		reflections: folded.activeReflections,
 		observations: folded.activeObservations,
 		maxTurns: runtime.config.agentMaxTurns,
 		maxOutputTokens: runtime.config.agentMaxTokens,
@@ -608,7 +609,11 @@ async function runDropperStage(
 	const resolved = await resolver.resolve("dropper");
 	if (!resolved) return "abort";
 
-	const reflectionsForDropper = mergeReflections(folded.reflections, sameRunReflections);
+	// A same-run reflection can reuse the id of a retired one; the tombstone keeps it retired, so it is not coverage.
+	const reflectionsForDropper = mergeReflections(
+		folded.activeReflections,
+		sameRunReflections.filter((reflection) => !folded.retiredReflectionIds.has(reflection.id)),
+	);
 	const droppedIds = await runStageWithFallback(ctx, "dropper", resolved, resolver, (worker) => runDropper({
 		model: worker.model as any,
 		apiKey: worker.apiKey,

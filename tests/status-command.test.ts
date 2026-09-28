@@ -10,6 +10,7 @@ import {
 	oldV2CompactionDetails,
 	oldV2ObservationEntry,
 	reflection,
+	reflectionsDroppedEntry,
 	reflectionsRecordedEntry,
 	rawMessage,
 	textCustomMessage,
@@ -280,5 +281,25 @@ describe("V3 /om:status", () => {
 
 			expect(output).toContain("Next compaction:  ~0 / 30 estimated source tokens (0%)");
 		});
+	});
+
+	it("reports retired reflections and retirement drift only when retirements exist", async () => {
+		const obs = observation("aaaaaaaaaaaa", { tokenCount: 5 });
+		const kept = reflection("eeeeeeeeeeee", ["aaaaaaaaaaaa"], { tokenCount: 3 });
+		const retired = reflection("ffffffffffff", ["aaaaaaaaaaaa"], { tokenCount: 3 });
+		const base = [
+			textCustomMessage("raw-1", "aaaa"),
+			observationsRecordedEntry("om-obs", { observations: [obs], coversUpToId: "raw-1" }),
+			reflectionsRecordedEntry("om-ref", { reflections: [kept, retired], coversUpToId: "raw-1" }),
+			compactionEntry("cmp", { firstKeptEntryId: "raw-1", details: memoryDetails({ fullFold: true, observations: [obs], reflections: [kept, retired] }) }),
+		];
+
+		expect(await setup({ entries: base }).run()).toContain("Reflections:  2 recorded / 2 visible\n");
+
+		const output = await setup({
+			entries: [...base, reflectionsDroppedEntry("om-retire", { reflectionIds: ["ffffffffffff"], coversUpToId: "raw-1" })],
+		}).run();
+
+		expect(output).toContain("Reflections:  2 recorded / 1 retired / 1 active / 2 visible -1\n");
 	});
 });

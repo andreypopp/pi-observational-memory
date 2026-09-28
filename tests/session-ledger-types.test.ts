@@ -4,9 +4,11 @@ import {
 	OM_FOLDED,
 	OM_OBSERVATIONS_DROPPED,
 	OM_OBSERVATIONS_RECORDED,
+	OM_REFLECTIONS_DROPPED,
 	OM_REFLECTIONS_RECORDED,
 	buildObservationsDroppedData,
 	buildObservationsRecordedData,
+	buildReflectionsDroppedData,
 	buildReflectionsRecordedData,
 	isMemoryDetails,
 	isObservationsDroppedData,
@@ -15,6 +17,8 @@ import {
 	isObservationsRecordedEntry,
 	isObservation,
 	isReflection,
+	isReflectionsDroppedData,
+	isReflectionsDroppedEntry,
 	isReflectionsRecordedData,
 	isReflectionsRecordedEntry,
 } from "../src/session-ledger/index.js";
@@ -26,6 +30,7 @@ import {
 	oldV2CompactionDetails,
 	oldV2ObservationEntry,
 	reflection,
+	reflectionsDroppedEntry,
 	reflectionsRecordedEntry,
 } from "./fixtures/session.js";
 
@@ -34,6 +39,7 @@ describe("session-ledger V3 type guards and builders", () => {
 		expect(OM_OBSERVATIONS_RECORDED).toBe("om.observations.recorded");
 		expect(OM_REFLECTIONS_RECORDED).toBe("om.reflections.recorded");
 		expect(OM_OBSERVATIONS_DROPPED).toBe("om.observations.dropped");
+		expect(OM_REFLECTIONS_DROPPED).toBe("om.reflections.dropped");
 		expect(OM_FOLDED).toBe("om.folded");
 	});
 
@@ -111,5 +117,43 @@ describe("session-ledger V3 type guards and builders", () => {
 	it("ignores old V2 observation entries and old V2 compaction details", () => {
 		expect(isObservationsRecordedEntry(oldV2ObservationEntry("v2-entry"))).toBe(false);
 		expect(isMemoryDetails(oldV2CompactionDetails())).toBe(false);
+	});
+
+	it("accepts reflections with valid replaces ids and keeps accepting reflections without them", () => {
+		expect(isReflection(reflection("eeeeeeeeeeee", ["aaaaaaaaaaaa"]))).toBe(true);
+		expect(isReflection(reflection("eeeeeeeeeeee", ["aaaaaaaaaaaa"], { replaces: ["ffffffffffff"] }))).toBe(true);
+		expect(isReflection({ ...reflection("eeeeeeeeeeee", ["aaaaaaaaaaaa"]), replaces: [] })).toBe(false);
+		expect(isReflection({ ...reflection("eeeeeeeeeeee", ["aaaaaaaaaaaa"]), replaces: ["not-an-id"] })).toBe(false);
+		expect(isReflection({ ...reflection("eeeeeeeeeeee", ["aaaaaaaaaaaa"]), replaces: "ffffffffffff" })).toBe(false);
+	});
+
+	it("validates reflection retirement data", () => {
+		expect(isReflectionsDroppedData({ reflectionIds: ["eeeeeeeeeeee"], coversUpToId: "raw-1" })).toBe(true);
+		expect(isReflectionsDroppedData({ reflectionIds: ["eeeeeeeeeeee"], replacedBy: "ffffffffffff", coversUpToId: "raw-1" })).toBe(true);
+		expect(isReflectionsDroppedData({ reflectionIds: [], coversUpToId: "raw-1" })).toBe(false);
+		expect(isReflectionsDroppedData({ reflectionIds: ["not-an-id"], coversUpToId: "raw-1" })).toBe(false);
+		expect(isReflectionsDroppedData({ reflectionIds: ["eeeeeeeeeeee"], replacedBy: "nope", coversUpToId: "raw-1" })).toBe(false);
+		expect(isReflectionsDroppedData({ reflectionIds: ["eeeeeeeeeeee"], replacedBy: "eeeeeeeeeeee", coversUpToId: "raw-1" })).toBe(false);
+		expect(isReflectionsDroppedData({ reflectionIds: ["eeeeeeeeeeee"], coversUpToId: "" })).toBe(false);
+		expect(isReflectionsDroppedEntry(reflectionsDroppedEntry("om-retire-1", {
+			reflectionIds: ["eeeeeeeeeeee"],
+			coversUpToId: "raw-1",
+		}))).toBe(true);
+	});
+
+	it("builds reflection retirement data and rejects empty ids or coverage", () => {
+		expect(buildReflectionsDroppedData([], "raw-1")).toBeUndefined();
+		expect(buildReflectionsDroppedData(["eeeeeeeeeeee"], "")).toBeUndefined();
+		expect(buildReflectionsDroppedData(["not-an-id"], "raw-1")).toBeUndefined();
+		expect(buildReflectionsDroppedData(["eeeeeeeeeeee"], "raw-1", "eeeeeeeeeeee")).toBeUndefined();
+		expect(buildReflectionsDroppedData(["eeeeeeeeeeee"], "raw-1")).toEqual({
+			reflectionIds: ["eeeeeeeeeeee"],
+			coversUpToId: "raw-1",
+		});
+		expect(buildReflectionsDroppedData(["eeeeeeeeeeee"], "raw-1", "ffffffffffff")).toEqual({
+			reflectionIds: ["eeeeeeeeeeee"],
+			replacedBy: "ffffffffffff",
+			coversUpToId: "raw-1",
+		});
 	});
 });

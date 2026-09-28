@@ -42,6 +42,16 @@ not record from `before_agent_start`: it fails the call instead. So `src/agents/
 (`model.baseUrl === "claude-bridge"`), where they open the user message. All three workers build their
 opening messages through it; covered by `tests/worker-prompt.test.ts`.
 
+## Reflection retirement
+
+`om.reflections.dropped` (`reflectionIds`, optional `replacedBy`) is a permanent tombstone for reflections; a
+replacing reflection lists what it replaced in `Reflection.replaces`. `foldLedger` keeps every record in
+`reflections` and exposes `activeReflections`: every worker input, dropper coverage, status/view count and
+projection must use active reflections, while recall resolves retired ids. Projections gate retirements on the
+reflections boundary, so normal compactions keep them frozen until a full fold; retirement adds no trigger.
+Sessions without retirements must stay byte-for-byte unchanged (tests assert this across projection, status,
+recall and worker inputs).
+
 ## Maintaining this file
 
 Keep this file for knowledge useful to almost every future agent session in this project.

@@ -8,6 +8,7 @@ import {
 	observationsRecordedEntry,
 	oldV2ObservationEntry,
 	reflection,
+	reflectionsDroppedEntry,
 	reflectionsRecordedEntry,
 	textCustomMessage,
 } from "./fixtures/session.js";
@@ -113,5 +114,90 @@ describe("session-ledger V3 folding", () => {
 
 		expect(foldLedger(mainBranch).observations.map((obs) => obs.id)).toEqual(["aaaa00000000"]);
 		expect(foldLedger(forkBranch).observations.map((obs) => obs.id)).toEqual(["bbbb00000000"]);
+	});
+
+	it("does not report retired reflections when no retirement entries exist", () => {
+		const entries = [
+			textCustomMessage("raw-1", "aaaa"),
+			reflectionsRecordedEntry("om-ref-1", { reflections: [reflection("eeeeeeeeeeee", ["aaaaaaaaaaaa"])], coversUpToId: "raw-1" }),
+		];
+
+		const folded = foldLedger(entries);
+
+		expect(folded.activeReflections).toEqual(folded.reflections);
+		expect(folded.retiredReflectionIds.size).toBe(0);
+		expect(folded.reflectionReplacedBy.size).toBe(0);
+	});
+
+	it("retires reflections as tombstones while preserving reflection history", () => {
+		const ref1 = reflection("eeeeeeeeeeee", ["aaaaaaaaaaaa"]);
+		const ref2 = reflection("ffffffffffff", ["aaaaaaaaaaaa"]);
+		const ref3 = reflection("111111111111", ["aaaaaaaaaaaa"], { replaces: ["eeeeeeeeeeee"] });
+		const entries = [
+			textCustomMessage("raw-1", "aaaa"),
+			reflectionsRecordedEntry("om-ref-1", { reflections: [ref1, ref2], coversUpToId: "raw-1" }),
+			reflectionsRecordedEntry("om-ref-2", { reflections: [ref3], coversUpToId: "raw-1" }),
+			reflectionsDroppedEntry("om-retire-1", { reflectionIds: ["eeeeeeeeeeee"], replacedBy: "111111111111", coversUpToId: "raw-1" }),
+		];
+
+		const folded = foldLedger(entries);
+
+		expect(folded.reflections.map((ref) => ref.id)).toEqual(["eeeeeeeeeeee", "ffffffffffff", "111111111111"]);
+		expect(folded.activeReflections.map((ref) => ref.id)).toEqual(["ffffffffffff", "111111111111"]);
+		expect(folded.retiredReflectionIds.has("eeeeeeeeeeee")).toBe(true);
+		expect(folded.reflectionsById.get("eeeeeeeeeeee")).toEqual(ref1);
+		expect(folded.reflectionReplacedBy.get("eeeeeeeeeeee")).toBe("111111111111");
+	});
+
+	it("keeps retirement tombstones for unknown ids and for reflections recorded later", () => {
+		const late = reflection("eeeeeeeeeeee", ["aaaaaaaaaaaa"]);
+		const entries = [
+			textCustomMessage("raw-1", "aaaa"),
+			reflectionsDroppedEntry("om-retire-1", { reflectionIds: ["eeeeeeeeeeee", "deadbeef0000"], coversUpToId: "raw-1" }),
+			reflectionsRecordedEntry("om-ref-1", { reflections: [late], coversUpToId: "raw-1" }),
+		];
+
+		const folded = foldLedger(entries);
+
+		expect(folded.retiredReflectionIds).toEqual(new Set(["eeeeeeeeeeee", "deadbeef0000"]));
+		expect(folded.reflections).toEqual([late]);
+		expect(folded.activeReflections).toEqual([]);
+		expect(folded.reflectionReplacedBy.size).toBe(0);
+	});
+
+	it("keeps the first replacement recorded for a retired reflection", () => {
+		const entries = [
+			textCustomMessage("raw-1", "aaaa"),
+			reflectionsDroppedEntry("om-retire-1", { reflectionIds: ["eeeeeeeeeeee"], coversUpToId: "raw-1" }),
+			reflectionsDroppedEntry("om-retire-2", { reflectionIds: ["eeeeeeeeeeee"], replacedBy: "111111111111", coversUpToId: "raw-1" }),
+			reflectionsDroppedEntry("om-retire-3", { reflectionIds: ["eeeeeeeeeeee"], replacedBy: "222222222222", coversUpToId: "raw-1" }),
+		];
+
+		expect(foldLedger(entries).reflectionReplacedBy.get("eeeeeeeeeeee")).toBe("111111111111");
+	});
+
+	it("applies reflection retirements only through the fold boundary", () => {
+		const ref1 = reflection("eeeeeeeeeeee", ["aaaaaaaaaaaa"]);
+		const entries = [
+			textCustomMessage("raw-1", "aaaa"),
+			reflectionsRecordedEntry("om-ref-1", { reflections: [ref1], coversUpToId: "raw-1" }),
+			textCustomMessage("raw-2", "bbbb"),
+			reflectionsDroppedEntry("om-retire-1", { reflectionIds: ["eeeeeeeeeeee"], coversUpToId: "raw-2" }),
+		];
+
+		expect(foldLedger(entries, { upToEntryId: "raw-2" }).activeReflections).toEqual([ref1]);
+		expect(foldLedger(entries).activeReflections).toEqual([]);
+	});
+
+	it("ignores invalid reflection retirement entries", () => {
+		const ref1 = reflection("eeeeeeeeeeee", ["aaaaaaaaaaaa"]);
+		const entries = [
+			textCustomMessage("raw-1", "aaaa"),
+			reflectionsRecordedEntry("om-ref-1", { reflections: [ref1], coversUpToId: "raw-1" }),
+			reflectionsDroppedEntry("om-retire-1", { reflectionIds: ["not-an-id"], coversUpToId: "raw-1" }),
+			reflectionsDroppedEntry("om-retire-2", { reflectionIds: [], coversUpToId: "raw-1" }),
+		];
+
+		expect(foldLedger(entries).activeReflections).toEqual([ref1]);
 	});
 });

@@ -2,6 +2,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { Runtime } from "../runtime.js";
 import { copyTextToClipboard } from "../clipboard.js";
 import {
+	foldLedger,
 	fullProjection,
 	observationToSummaryLine,
 	reflectionToSummaryLine,
@@ -48,18 +49,25 @@ export function registerViewCommand(pi: ExtensionAPI, runtime: Runtime, options:
 			const entries = ctx.sessionManager.getBranch() as Entry[];
 			const mode = firstArg(args);
 
-			const notifyWithCopy = async (output: string) => {
+			// The note is shown but not copied, so the clipboard holds memory content only.
+			const notifyWithCopy = async (output: string, note?: string) => {
 				const copied = await copyToClipboard(output).catch(() => false);
+				const shown = note ? `${output}\n\n${note}` : output;
 				ctx.ui.notify(
 					copied
-						? `${output}\n\nCopied /om:view output to clipboard.`
-						: `${output}\n\nWarning: failed to copy /om:view output to clipboard.`,
+						? `${shown}\n\nCopied /om:view output to clipboard.`
+						: `${shown}\n\nWarning: failed to copy /om:view output to clipboard.`,
 					"info",
 				);
 			};
 
 			if (mode === "full") {
-				await notifyWithCopy(renderContentOnlyProjection(fullProjection(entries), "recorded"));
+				const folded = foldLedger(entries);
+				const retiredCount = folded.reflections.length - folded.activeReflections.length;
+				await notifyWithCopy(
+					renderContentOnlyProjection(fullProjection(entries), "recorded"),
+					retiredCount > 0 ? `Retired reflections: ${retiredCount} (not shown; recallable by id)` : undefined,
+				);
 				return;
 			}
 

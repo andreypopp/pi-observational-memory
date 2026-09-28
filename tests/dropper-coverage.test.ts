@@ -7,7 +7,15 @@ import {
 	summarizeCoverageByRelevance,
 	summarizeCoverageTransitionsByRelevance,
 } from "../src/agents/dropper/agent.js";
-import { observation, reflection } from "./fixtures/session.js";
+import { foldLedger } from "../src/session-ledger/index.js";
+import {
+	observation,
+	observationsRecordedEntry,
+	reflection,
+	reflectionsDroppedEntry,
+	reflectionsRecordedEntry,
+	textCustomMessage,
+} from "./fixtures/session.js";
 
 describe("V3 dropper reflection coverage helpers", () => {
 	it("maps support counts to deterministic coverage tiers", () => {
@@ -89,5 +97,22 @@ describe("V3 dropper reflection coverage helpers", () => {
 		expect(line).toContain("Important fact");
 		expect(line).not.toContain("drop-priority");
 		expect(line).not.toContain("drop-resistance");
+	});
+
+	it("does not count retired reflections as coverage when built from active reflections", () => {
+		const obs = observation("aaaaaaaaaaaa");
+		const entries = [
+			textCustomMessage("raw-1", "aaaa"),
+			observationsRecordedEntry("om-obs", { observations: [obs], coversUpToId: "raw-1" }),
+			reflectionsRecordedEntry("om-ref", {
+				reflections: [reflection("eeeeeeeeeeee", ["aaaaaaaaaaaa"]), reflection("ffffffffffff", ["aaaaaaaaaaaa"])],
+				coversUpToId: "raw-1",
+			}),
+			reflectionsDroppedEntry("om-retire", { reflectionIds: ["ffffffffffff"], coversUpToId: "raw-1" }),
+		];
+		const folded = foldLedger(entries);
+
+		expect(reflectionCoverageMap(folded.activeObservations, folded.reflections).get("aaaaaaaaaaaa")).toBe("strong");
+		expect(reflectionCoverageMap(folded.activeObservations, folded.activeReflections).get("aaaaaaaaaaaa")).toBe("partial");
 	});
 });

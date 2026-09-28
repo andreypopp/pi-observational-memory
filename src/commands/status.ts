@@ -55,9 +55,17 @@ export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void 
 					removedSuffix(drift.droppedOnlyInFull.length),
 				],
 			);
+			const retiredReflectionCount = folded.reflections.length - folded.activeReflections.length;
+			// Retirement counts appear only once a reflection has been retired, keeping older status output unchanged.
+			const reflectionCounts = retiredReflectionCount > 0
+				? `${folded.reflections.length} recorded / ${retiredReflectionCount} retired / ${folded.activeReflections.length} active / ${visible.reflections.length} visible`
+				: `${folded.reflections.length} recorded / ${visible.reflections.length} visible`;
 			const reflectionLine = appendSuffixes(
-				`Reflections:  ${folded.reflections.length} recorded / ${visible.reflections.length} visible`,
-				[addedSuffix(drift.reflectionsOnlyInFull.length)],
+				`Reflections:  ${reflectionCounts}`,
+				[
+					addedSuffix(drift.reflectionsOnlyInFull.length),
+					removedSuffix(drift.reflectionsRetiredOnlyInFull.length),
+				],
 			);
 			const obsProgress = rawTokensSinceObservationCoverage(entries);
 			const reflectionProgress = rawTokensSinceReflectionCoverage(entries);

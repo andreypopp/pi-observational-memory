@@ -1,6 +1,7 @@
 export const OM_OBSERVATIONS_RECORDED = "om.observations.recorded";
 export const OM_REFLECTIONS_RECORDED = "om.reflections.recorded";
 export const OM_OBSERVATIONS_DROPPED = "om.observations.dropped";
+export const OM_REFLECTIONS_DROPPED = "om.reflections.dropped";
 export const OM_FOLDED = "om.folded";
 
 export const RELEVANCE_VALUES = ["low", "medium", "high", "critical"] as const;
@@ -36,6 +37,8 @@ export type Reflection = {
 	content: string;
 	supportingObservationIds: string[];
 	tokenCount: number;
+	/** Ids of reflections this reflection replaced; each is retired by an om.reflections.dropped entry. */
+	replaces?: string[];
 };
 
 export type ObservationsRecordedEntryData = {
@@ -50,6 +53,13 @@ export type ReflectionsRecordedEntryData = {
 
 export type ObservationsDroppedEntryData = {
 	observationIds: string[];
+	coversUpToId: string;
+};
+
+export type ReflectionsDroppedEntryData = {
+	reflectionIds: string[];
+	/** Id of the reflection that replaced the retired ones; absent for plain retirement. */
+	replacedBy?: string;
 	coversUpToId: string;
 };
 
@@ -82,6 +92,10 @@ export function isMemoryId(value: unknown): value is string {
 	return typeof value === "string" && MEMORY_ID_PATTERN.test(value);
 }
 
+function isMemoryIdArray(value: unknown): value is string[] {
+	return Array.isArray(value) && value.length > 0 && value.every(isMemoryId);
+}
+
 function isTokenCount(value: unknown): value is number {
 	return typeof value === "number" && Number.isFinite(value) && value >= 0;
 }
@@ -109,7 +123,8 @@ export function isReflection(value: unknown): value is Reflection {
 		isNonEmptyString(value.content) &&
 		!/\r|\n/.test(value.content) &&
 		isNonEmptyStringArray(value.supportingObservationIds) &&
-		isTokenCount(value.tokenCount)
+		isTokenCount(value.tokenCount) &&
+		(value.replaces === undefined || isMemoryIdArray(value.replaces))
 	);
 }
 
@@ -136,6 +151,13 @@ export function isReflectionsRecordedData(value: unknown): value is ReflectionsR
 export function isObservationsDroppedData(value: unknown): value is ObservationsDroppedEntryData {
 	if (!isPlainRecord(value)) return false;
 	return isNonEmptyStringArray(value.observationIds) && isNonEmptyString(value.coversUpToId);
+}
+
+export function isReflectionsDroppedData(value: unknown): value is ReflectionsDroppedEntryData {
+	if (!isPlainRecord(value)) return false;
+	if (!isMemoryIdArray(value.reflectionIds) || !isNonEmptyString(value.coversUpToId)) return false;
+	if (value.replacedBy === undefined) return true;
+	return isMemoryId(value.replacedBy) && !value.reflectionIds.includes(value.replacedBy);
 }
 
 export function isMemoryDetails(value: unknown): value is MemoryDetails {
@@ -175,6 +197,14 @@ export function isObservationsDroppedEntry(entry: Entry): entry is Entry & {
 	return entry.type === "custom" && entry.customType === OM_OBSERVATIONS_DROPPED && isObservationsDroppedData(entry.data);
 }
 
+export function isReflectionsDroppedEntry(entry: Entry): entry is Entry & {
+	type: "custom";
+	customType: typeof OM_REFLECTIONS_DROPPED;
+	data: ReflectionsDroppedEntryData;
+} {
+	return entry.type === "custom" && entry.customType === OM_REFLECTIONS_DROPPED && isReflectionsDroppedData(entry.data);
+}
+
 export function buildObservationsRecordedData(
 	observations: Observation[],
 	coversUpToId: string,
@@ -197,4 +227,15 @@ export function buildObservationsDroppedData(
 ): ObservationsDroppedEntryData | undefined {
 	if (observationIds.length === 0 || !isNonEmptyString(coversUpToId)) return undefined;
 	return { observationIds, coversUpToId };
+}
+
+export function buildReflectionsDroppedData(
+	reflectionIds: string[],
+	coversUpToId: string,
+	replacedBy?: string,
+): ReflectionsDroppedEntryData | undefined {
+	const data: ReflectionsDroppedEntryData = replacedBy === undefined
+		? { reflectionIds, coversUpToId }
+		: { reflectionIds, replacedBy, coversUpToId };
+	return isReflectionsDroppedData(data) ? data : undefined;
 }

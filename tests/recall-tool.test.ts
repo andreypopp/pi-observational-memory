@@ -14,6 +14,7 @@ import {
 	oldV2ObservationEntry,
 	rawMessage,
 	reflection,
+	reflectionsDroppedEntry,
 	reflectionsRecordedEntry,
 	type TestEntry,
 } from "./fixtures/session.js";
@@ -122,5 +123,72 @@ describe("V3 recall tool", () => {
 
 		expect(result.details?.status).toBe("not_found");
 		expect(text).toContain("No observation or reflection with id aaaaaaaaaaaa was found");
+	});
+
+	it("renders retired reflections with their replacement while following support", async () => {
+		const obs = observation("aaaaaaaaaaaa", { content: "User likes tea.", sourceEntryIds: ["raw-1"] });
+		const oldRef = reflection("eeeeeeeeeeee", ["aaaaaaaaaaaa"], { content: "User likes tea." });
+		const newRef = reflection("ffffffffffff", ["aaaaaaaaaaaa"], { content: "User likes green tea.", replaces: ["eeeeeeeeeeee"] });
+		const entries = [
+			rawMessage("raw-1", "I like tea."),
+			observationsRecordedEntry("om-obs", { observations: [obs], coversUpToId: "raw-1" }),
+			reflectionsRecordedEntry("om-ref", { reflections: [oldRef], coversUpToId: "om-obs" }),
+			reflectionsRecordedEntry("om-ref-2", { reflections: [newRef], coversUpToId: "om-obs" }),
+			reflectionsDroppedEntry("om-retire", { reflectionIds: ["eeeeeeeeeeee"], replacedBy: "ffffffffffff", coversUpToId: "om-obs" }),
+		];
+
+		const { result, text } = await execute("eeeeeeeeeeee", entries);
+		const tui = formatRecallRenderedResultForTui(result as any, false);
+
+		expect(result.details?.status).toBe("ok");
+		expect(result.details?.reflections[0]).toMatchObject({ id: "eeeeeeeeeeee", status: "retired", replacedBy: "ffffffffffff" });
+		expect(text).toContain("[eeeeeeeeeeee] [retired] User likes tea.");
+		expect(text).toContain("Reflection eeeeeeeeeeee is retired from active memory but remains recallable; replaced by [ffffffffffff].");
+		expect(text).toContain("I like tea.");
+		expect(tui).toContain("retired");
+		expect(tui).toContain("replaced by ffffffffffff");
+	});
+
+	it("renders the reflections a replacing reflection replaces", async () => {
+		const obs = observation("aaaaaaaaaaaa", { content: "User likes tea.", sourceEntryIds: ["raw-1"] });
+		const oldRef = reflection("eeeeeeeeeeee", ["aaaaaaaaaaaa"], { content: "User likes tea." });
+		const newRef = reflection("ffffffffffff", ["aaaaaaaaaaaa"], { content: "User likes green tea.", replaces: ["eeeeeeeeeeee"] });
+		const entries = [
+			rawMessage("raw-1", "I like tea."),
+			observationsRecordedEntry("om-obs", { observations: [obs], coversUpToId: "raw-1" }),
+			reflectionsRecordedEntry("om-ref", { reflections: [oldRef], coversUpToId: "om-obs" }),
+			reflectionsRecordedEntry("om-ref-2", { reflections: [newRef], coversUpToId: "om-obs" }),
+			reflectionsDroppedEntry("om-retire", { reflectionIds: ["eeeeeeeeeeee"], replacedBy: "ffffffffffff", coversUpToId: "om-obs" }),
+		];
+
+		const { result, text } = await execute("ffffffffffff", entries);
+		const tui = formatRecallRenderedResultForTui(result as any, false);
+
+		expect(result.details?.reflections[0]).toMatchObject({ id: "ffffffffffff", replaces: [{ id: "eeeeeeeeeeee", content: "User likes tea." }] });
+		expect(result.details?.reflections[0].status).toBeUndefined();
+		expect(text).toContain("Replaces (retired):\n[eeeeeeeeeeee] User likes tea.");
+		expect(tui).toContain("✓ replaces");
+	});
+
+	it("keeps reflection recall output unchanged without retirements", async () => {
+		const obs = observation("aaaaaaaaaaaa", { content: "User likes tea.", sourceEntryIds: ["raw-1"] });
+		const ref = reflection("eeeeeeeeeeee", ["aaaaaaaaaaaa"], { content: "User likes tea." });
+		const entries = [
+			rawMessage("raw-1", "I like tea."),
+			observationsRecordedEntry("om-obs", { observations: [obs], coversUpToId: "raw-1" }),
+			reflectionsRecordedEntry("om-ref", { reflections: [ref], coversUpToId: "om-obs" }),
+		];
+
+		const { result, text } = await execute("eeeeeeeeeeee", entries);
+
+		expect(result.details?.reflections).toEqual([
+			{ id: "eeeeeeeeeeee", content: "User likes tea.", supportingObservationIds: ["aaaaaaaaaaaa"], reflectionIndex: 0 },
+		]);
+		expect(text.split("\n\n").slice(0, 2)).toEqual([
+			"Reflections:\n[eeeeeeeeeeee] User likes tea.",
+			"Observations:\n[aaaaaaaaaaaa] 2026-05-02T10:00:00.000Z [medium] User likes tea.",
+		]);
+		expect(text).not.toContain("retired");
+		expect(text).not.toContain("Replaces");
 	});
 });

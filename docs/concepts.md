@@ -47,6 +47,7 @@ type Reflection = {
   content: string;                    // single-line plain prose
   supportingObservationIds: string[]; // evidence observations
   tokenCount: number;                 // estimated content tokens
+  replaces?: string[];                // ids of reflections this one replaced
 }
 ```
 
@@ -59,6 +60,12 @@ Rendered:
 Reflections are written by the reflector into `om.reflections.recorded` ledger entries. They should be fewer and more durable than observations; the reflector should not turn every observation into a reflection. The reflector receives each active observation with a deterministic coverage tier (`none`, `partial`, or `strong`) so it can review durable facts that are not yet preserved, but coverage is review context rather than a quota or automatic reflection rule.
 
 A reflection's `supportingObservationIds` are downstream dropper coverage evidence. They should include all and only current observations whose durable meaning the reflection preserves with equivalent fidelity. False or inflated support ids can make later pruning look safer than it is.
+
+### Reflection retirement
+
+Reflections are never edited or deleted, but they can be retired. An `om.reflections.dropped` ledger entry is a tombstone for reflection ids: plain retirement when it names no replacement, or replacement when `replacedBy` names the newer reflection, which lists the retired ids in its `replaces` field.
+
+Retirement is permanent: a retired id stays retired even if its reflection record appears later, and nothing un-retires it. Retired reflections leave active memory: workers never see them, and they never count as dropper coverage. Compaction treats retirements like reflections, so they become visible to the agent only at the next full fold. Recall still resolves a retired reflection, with its replacement and supporting evidence.
 
 ### Drops
 
@@ -99,7 +106,7 @@ If the projection is empty, the hook returns no extension compaction and Pi uses
 
 ## Ledger entries
 
-V3 uses three custom memory ledger entry types:
+V3 uses four custom memory ledger entry types:
 
 ```ts
 om.observations.recorded: {
@@ -114,6 +121,12 @@ om.reflections.recorded: {
 
 om.observations.dropped: {
   observationIds: string[];
+  coversUpToId: string;
+}
+
+om.reflections.dropped: {
+  reflectionIds: string[];
+  replacedBy?: string;
   coversUpToId: string;
 }
 ```
@@ -163,7 +176,7 @@ Visible and full memory can differ intentionally. Background ledger work may hap
 Recall can return:
 
 - an observation, marked `active` or `dropped`;
-- a reflection plus supporting observations;
+- a reflection plus supporting observations, marked `retired` (with its replacement, when known) if it was retired, and listing the retired reflections it replaced;
 - a mixed result if an id collision exists;
 - missing/non-source diagnostics when source evidence is unavailable.
 
@@ -197,9 +210,10 @@ When upgrading from V2, update settings and start a new clean session.
 | Observation | Timestamped source-backed event record. |
 | Reflection | Durable conclusion backed by observations. |
 | Drop | Tombstone that removes an observation id from active memory. |
+| Retirement | Tombstone that removes a reflection id from active memory, optionally naming its replacement. |
 | Visible memory | Latest folded memory visible to the agent through compaction details. |
 | Full memory | Full V3 ledger truth folded at branch tip or another boundary. |
-| Full fold | Compaction mode that folds observations, reflections, and drops through the boundary. |
+| Full fold | Compaction mode that folds observations, reflections, drops, and retirements through the boundary. |
 | Progress watermark | `coversUpToId`; marker used for raw-token progress clocks. |
 | Observer | Background agent that records observations. |
 | Reflector | Background agent that records durable reflections. |

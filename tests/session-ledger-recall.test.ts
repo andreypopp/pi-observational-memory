@@ -3,6 +3,7 @@ import { recallMemorySources, type Entry, type Observation, type Reflection } fr
 import {
 	OM_OBSERVATIONS_DROPPED,
 	OM_OBSERVATIONS_RECORDED,
+	OM_REFLECTIONS_DROPPED,
 	OM_REFLECTIONS_RECORDED,
 } from "../src/session-ledger/types.js";
 
@@ -72,6 +73,15 @@ function dropsEntry(id: string, observationIds: string[], coversUpToId = "src-1"
 		id,
 		customType: OM_OBSERVATIONS_DROPPED,
 		data: { observationIds, coversUpToId },
+	};
+}
+
+function retirementEntry(id: string, reflectionIds: string[], replacedBy?: string, coversUpToId = "src-1"): Entry {
+	return {
+		type: "custom",
+		id,
+		customType: OM_REFLECTIONS_DROPPED,
+		data: { reflectionIds, ...(replacedBy ? { replacedBy } : {}), coversUpToId },
 	};
 }
 
@@ -242,5 +252,65 @@ describe("session-ledger recall", () => {
 		expect(result.collision).toBe(true);
 		expect(result.observations).toHaveLength(1);
 		expect(result.reflections).toHaveLength(1);
+	});
+
+	it("recalls a retired reflection with its replacement and supporting evidence", () => {
+		const REF_2 = "111111111111";
+		const entries = [
+			sourceEntry("src-1"),
+			observationsEntry("obs-entry-1", [observation({ id: OBS_1, sourceEntryIds: ["src-1"] })]),
+			reflectionsEntry("ref-entry-1", [reflection({ id: REF_1, supportingObservationIds: [OBS_1] })]),
+			dropsEntry("drop-entry-1", [OBS_1]),
+			reflectionsEntry("ref-entry-2", [reflection({ id: REF_2, supportingObservationIds: [OBS_1], replaces: [REF_1] })]),
+			retirementEntry("retire-entry-1", [REF_1], REF_2),
+		];
+
+		const result = recallMemorySources(entries, REF_1);
+
+		expect(result.status).toBe("found");
+		if (result.status !== "found") return;
+		expect(result.kind).toBe("reflection");
+		expect(result.reflections[0].status).toBe("retired");
+		expect(result.reflections[0].replacedBy).toBe(REF_2);
+		expect(result.observations[0].status).toBe("dropped");
+		expect(result.sourceEntries.map((entry) => entry.id)).toEqual(["src-1"]);
+		expect(result.partial).toBe(false);
+	});
+
+	it("resolves the reflections a replacing reflection replaces", () => {
+		const REF_2 = "111111111111";
+		const replaced = reflection({ id: REF_1, supportingObservationIds: [OBS_1], content: "Old conclusion" });
+		const entries = [
+			sourceEntry("src-1"),
+			observationsEntry("obs-entry-1", [observation({ id: OBS_1, sourceEntryIds: ["src-1"] })]),
+			reflectionsEntry("ref-entry-1", [replaced]),
+			reflectionsEntry("ref-entry-2", [reflection({ id: REF_2, supportingObservationIds: [OBS_1], replaces: [REF_1, MISSING_OBS] })]),
+			retirementEntry("retire-entry-1", [REF_1], REF_2),
+		];
+
+		const result = recallMemorySources(entries, REF_2);
+
+		expect(result.status).toBe("found");
+		if (result.status !== "found") return;
+		expect(result.reflections[0].status).toBe("active");
+		expect(result.reflections[0].replacedBy).toBeUndefined();
+		expect(result.reflections[0].replacedReflections).toEqual([replaced]);
+		expect(result.reflections[0].missingReplacedReflectionIds).toEqual([MISSING_OBS]);
+		expect(result.partial).toBe(false);
+	});
+
+	it("marks reflections active with no replacement data when no retirements exist", () => {
+		const entries = [
+			sourceEntry("src-1"),
+			observationsEntry("obs-entry-1", [observation({ id: OBS_1, sourceEntryIds: ["src-1"] })]),
+			reflectionsEntry("ref-entry-1", [reflection({ id: REF_1, supportingObservationIds: [OBS_1] })]),
+		];
+
+		const result = recallMemorySources(entries, REF_1);
+
+		expect(result.status).toBe("found");
+		if (result.status !== "found") return;
+		expect(result.reflections[0]).toMatchObject({ status: "active", replacedReflections: [], missingReplacedReflectionIds: [] });
+		expect(result.reflections[0].replacedBy).toBeUndefined();
 	});
 });

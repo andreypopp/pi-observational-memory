@@ -25,6 +25,7 @@ import {
 	observationsDroppedEntry,
 	observationsRecordedEntry,
 	reflection,
+	reflectionsDroppedEntry,
 	reflectionsRecordedEntry,
 	textCustomMessage,
 	type TestEntry,
@@ -1141,5 +1142,68 @@ describe("observer chunk cap", () => {
 
 		expect(mockAgents.runObserver).toHaveBeenCalledWith(expect.objectContaining({ allowedSourceEntryIds: ["raw-1"] }));
 		expect(pi.appendEntry).toHaveBeenCalledWith(OM_OBSERVATIONS_RECORDED, expect.objectContaining({ coversUpToId: "raw-1" }));
+	});
+});
+
+describe("reflection retirement in worker inputs", () => {
+	const obs = observation("aaaaaaaaaaaa", { sourceEntryIds: ["raw-1"], tokenCount: 10 });
+	const kept = reflection("eeeeeeeeeeee", ["aaaaaaaaaaaa"], { content: "Kept reflection" });
+	const retired = reflection("ffffffffffff", ["aaaaaaaaaaaa"], { content: "Retired reflection" });
+
+	function retirementEntries(): TestEntry[] {
+		return [
+			textCustomMessage("raw-1", "aaaaaaaa"),
+			observationsRecordedEntry("om-obs", { observations: [obs], coversUpToId: "raw-1" }),
+			reflectionsRecordedEntry("om-ref", { reflections: [kept, retired], coversUpToId: "raw-1" }),
+			reflectionsDroppedEntry("om-retire", { reflectionIds: ["ffffffffffff"], coversUpToId: "raw-1" }),
+			textCustomMessage("raw-2", "bbbbbbbb"),
+		];
+	}
+
+	it("passes only active reflections to the observer", async () => {
+		const { fire, runLaunchedWork } = setup({ entries: retirementEntries(), reflectAfterTokens: 999 });
+
+		fire();
+		await runLaunchedWork();
+
+		expect(mockAgents.runObserver).toHaveBeenCalledWith(expect.objectContaining({
+			priorReflections: ["[eeeeeeeeeeee] Kept reflection"],
+		}));
+	});
+
+	it("passes only active reflections to the reflector and dropper", async () => {
+		const newRef = reflection("111111111111", ["aaaaaaaaaaaa"]);
+		mockAgents.runReflector.mockResolvedValueOnce([newRef]);
+		const { fire, runLaunchedWork } = setup({ entries: retirementEntries(), observeAfterTokens: 999, observationsPoolTargetTokens: 5 });
+
+		fire();
+		await runLaunchedWork();
+
+		expect(mockAgents.runReflector).toHaveBeenCalledWith(expect.objectContaining({ reflections: [kept], observations: [obs] }));
+		expect(mockAgents.runDropper).toHaveBeenCalledWith(expect.objectContaining({ reflections: [kept, newRef], observations: [obs] }));
+	});
+
+	it("does not let a same-run reflection with a retired id count as dropper coverage", async () => {
+		const newRef = reflection("111111111111", ["aaaaaaaaaaaa"]);
+		mockAgents.runReflector.mockResolvedValueOnce([retired, newRef]);
+		const { fire, runLaunchedWork } = setup({ entries: retirementEntries(), observeAfterTokens: 999, observationsPoolTargetTokens: 5 });
+
+		fire();
+		await runLaunchedWork();
+
+		expect(mockAgents.runDropper).toHaveBeenCalledWith(expect.objectContaining({ reflections: [kept, newRef] }));
+	});
+
+	it("keeps worker inputs unchanged for sessions without retirements", async () => {
+		const newRef = reflection("111111111111", ["aaaaaaaaaaaa"]);
+		mockAgents.runReflector.mockResolvedValueOnce([newRef]);
+		const entries = retirementEntries().filter((entry) => entry.id !== "om-retire");
+		const { fire, runLaunchedWork } = setup({ entries, observeAfterTokens: 999, observationsPoolTargetTokens: 5 });
+
+		fire();
+		await runLaunchedWork();
+
+		expect(mockAgents.runReflector).toHaveBeenCalledWith(expect.objectContaining({ reflections: [kept, retired] }));
+		expect(mockAgents.runDropper).toHaveBeenCalledWith(expect.objectContaining({ reflections: [kept, retired, newRef] }));
 	});
 });

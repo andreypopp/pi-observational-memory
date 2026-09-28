@@ -10,6 +10,7 @@ import {
 	oldV2CompactionDetails,
 	oldV2ObservationEntry,
 	reflection,
+	reflectionsDroppedEntry,
 	reflectionsRecordedEntry,
 	textCustomMessage,
 	type TestEntry,
@@ -163,5 +164,23 @@ describe("V3 /om:view", () => {
 		expect(copyToClipboard).not.toHaveBeenCalled();
 		expect(clipboardText).toBeUndefined();
 		expect(output).toBe("Usage: /om:view [full]");
+	});
+
+	it("full view excludes retired reflections and reports their count outside the copied text", async () => {
+		const kept = reflection("eeeeeeeeeeee", ["aaaaaaaaaaaa"], { content: "Kept reflection" });
+		const retired = reflection("ffffffffffff", ["aaaaaaaaaaaa"], { content: "Retired reflection" });
+		const entries = [
+			textCustomMessage("raw-1", "aaaa"),
+			observationsRecordedEntry("om-obs", { observations: [observation("aaaaaaaaaaaa")], coversUpToId: "raw-1" }),
+			reflectionsRecordedEntry("om-ref", { reflections: [kept, retired], coversUpToId: "raw-1" }),
+			reflectionsDroppedEntry("om-retire", { reflectionIds: ["ffffffffffff", "deadbeef0000"], coversUpToId: "raw-1" }),
+		];
+
+		const { output, clipboardText } = await setup(entries).run(["full"]);
+
+		expect(clipboardText).toContain("Kept reflection");
+		expect(clipboardText).not.toContain("Retired reflection");
+		expect(clipboardText).not.toContain("Retired reflections:");
+		expect(output).toBe(`${clipboardText}\n\nRetired reflections: 1 (not shown; recallable by id)\n\n${COPY_SUCCESS}`);
 	});
 });
