@@ -26,6 +26,8 @@ export type ProjectionDiff = {
 
 export type CompactionProjectionConfig = {
 	observationsPoolMaxTokens: number;
+	/** Full-fold regardless of observation pool pressure (the /om:reflect compaction). */
+	forceFullFold?: boolean;
 };
 
 export type CompactionProjection = Projection & {
@@ -196,7 +198,7 @@ export function buildCompactionProjection(
 		(total, observation) => total + observation.tokenCount,
 		0,
 	);
-	const fullFold = observationTokens >= config.observationsPoolMaxTokens;
+	const fullFold = config.forceFullFold === true || observationTokens >= config.observationsPoolMaxTokens;
 	const projection = fullFold
 		? fullProjection(entries, firstKeptEntryId)
 		: normalProjection;

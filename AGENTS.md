@@ -55,6 +55,14 @@ rules live in code, not the prompt. Crystallize dedupes against retired ids too.
 Sessions without retirements must stay byte-for-byte unchanged (tests assert this across projection, status,
 recall and worker inputs).
 
+## /om:reflect
+
+`src/commands/reflect.ts` sets a one-shot `runtime.reflectRequest` and calls `ctx.compact()` without awaiting it (Pi's
+`compact()` waits for idle). The compaction hook consumes the request and runs a forced consolidation pass under the
+consolidation lock. Every entry the pass writes is capped at `firstKeptEntryId` via `ConsolidationOptions.coverageLimitId`,
+then the hook full-folds the live branch. OM can only learn the cut inside `session_before_compact`, so the pass
+must stay in the hook.
+
 ## Maintaining this file
 
 Keep this file for knowledge useful to almost every future agent session in this project.

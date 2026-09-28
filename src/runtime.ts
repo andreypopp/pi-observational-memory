@@ -1,5 +1,6 @@
 import { type Config, DEFAULTS, loadConfig } from "./config.js";
 import { debugLog } from "./debug-log.js";
+import type { ReflectRequest } from "./reflect-report.js";
 
 export type ResolveResult =
 	| {
@@ -117,6 +118,8 @@ export class Runtime {
 	consolidationPhase: ConsolidationPhase | undefined;
 	compactInFlight = false;
 	compactHookInFlight = false;
+	/** One-shot /om:reflect request; the next compaction hook consumes it and runs a forced pass first. */
+	reflectRequest: ReflectRequest | undefined;
 	resolveFailureNotified = false;
 	reflectorModelFailureNotified = false;
 	lastObserverError: string | undefined;

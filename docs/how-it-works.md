@@ -15,6 +15,7 @@ V3 is ledger-centered: memory state is reconstructed by folding V3 ledger entrie
 | `agent_settled` compaction trigger | Maybe call `ctx.compact()` when idle and over `compactAfterTokens`, after Pi finishes retries and queued continuation. |
 | `session_before_compact` hook | Build the V3 compaction payload deterministically. |
 | `/om:status` | Show ledger counts, drift, progress clocks, and worker state. |
+| `/om:reflect` | Force a full memory pass, then a full-fold compaction. |
 | `/om:view` | Show visible or full memory content and attempt to copy the rendered memory text. |
 | `recall` tool | Recover source evidence for a memory id. |
 
@@ -322,6 +323,18 @@ Clipboard copy uses platform clipboard commands (`pbcopy`, `clip`, `wl-copy`, `x
 ### `/om:view full`
 
 Shows full V3 ledger truth at branch tip, without retired reflections, and attempts to copy the rendered memory text to the clipboard using the same success/failure behavior as default `/om:view`. When reflections are retired, it adds a `Retired reflections: N` line to the shown output; that line is not copied.
+
+### `/om:reflect`
+
+Forces a memory pass and a full-fold compaction, so cleanup shows up in the agent's context right away. OM cannot know Pi's cut (`firstKeptEntryId`) before calling `ctx.compact()`, so the pass runs inside the compaction hook:
+
+1. The command refuses while a compaction is in flight, waits for running background consolidation, then sets a one-shot `runtime.reflectRequest` and holds `compactInFlight` so the auto-compaction trigger cannot fire. It calls `ctx.compact()` without awaiting it, because Pi's `compact()` waits for the session to go idle first.
+2. `session_before_compact` consumes the request before its first await. It then runs `runConsolidationPipeline` under the consolidation lock (`launchConsolidationTask`, so the `turn_end` trigger cannot launch meanwhile), with `forceObservation`, `forceReflection`, `coverageLimitId: firstKeptEntryId`, and the compaction's abort signal:
+   - The observer ignores its clock and deliberate-empty backoff, and reads one chunk of source entries only through the cut.
+   - Every entry the pass writes caps its `coversUpToId` at the cut, `earlierCoverageMarkerId(normal marker, firstKeptEntryId)`. The pass therefore lands in this fold, even when an earlier observer run covered entries past the cut.
+   - The dropper still runs only when the active pool is over `observationsPoolTargetTokens`, because its drop budget is zero otherwise.
+3. The hook re-reads the live branch and builds the compaction projection with `forceFullFold`. Worker failures are recorded as usual, and the fold still happens. An empty projection still delegates to Pi's native summarizer.
+4. `onComplete` reports observations recorded and dropped, reflections added, replaced, and retired, and summary sizes before (latest visible memory) and after. If Pi rejects before the hook runs ("Nothing to compact", "Already compacted"), the command reports that there is nothing to compact yet. Both paths clear the request and `compactInFlight`.
 
 ## Recall flow
 

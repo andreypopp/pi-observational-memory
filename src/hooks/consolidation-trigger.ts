@@ -5,6 +5,7 @@ import { ObserverStreamError, runObserver } from "../agents/observer/agent.js";
 import { runReflector } from "../agents/reflector/agent.js";
 import { runReflectionReview } from "../agents/reviewer/agent.js";
 import { debugLog, withDebugLogContext } from "../debug-log.js";
+import type { ConsolidationReport } from "../reflect-report.js";
 import { resolveObserverChunkMaxTokens } from "../config.js";
 import type { ConsolidationPhase, ResolveCtx, ResolveResult, Runtime } from "../runtime.js";
 import { serializeSourceAddressedBranchEntries } from "../serialize.js";
@@ -56,7 +57,22 @@ type StageOutcome = "continue" | "abort";
 export type ConsolidationOptions = {
 	/** Run the reflector regardless of its token clock, and review reflections even when it records nothing new. */
 	forceReflection?: boolean;
+	/** Run the observer regardless of its token clock and deliberate-empty backoff. */
+	forceObservation?: boolean;
+	/**
+	 * Keep this pass at or before a compaction cut: the observer reads source entries only through this id,
+	 * and every entry the pass writes has its coversUpToId capped at it, so the pass lands in that fold.
+	 */
+	coverageLimitId?: string;
+	/** Aborts running workers (the compaction's signal for /om:reflect). */
+	signal?: AbortSignal;
+	/** Accumulates what the pass recorded. */
+	report?: ConsolidationReport;
 };
+
+function capCoverage(entries: Entry[], coversUpToId: string | undefined, options: ConsolidationOptions): string | undefined {
+	return options.coverageLimitId ? earlierCoverageMarkerId(entries, coversUpToId, options.coverageLimitId) : coversUpToId;
+}
 
 type ReflectorStageResult = {
 	outcome: StageOutcome;
@@ -369,7 +385,7 @@ export async function runConsolidationPipeline(
 
 	runtime.consolidationPhase = "observer";
 	try {
-		const observerOutcome = await runObserverStage(pi, runtime, ctx, resolver);
+		const observerOutcome = await runObserverStage(pi, runtime, ctx, resolver, options);
 		if (observerOutcome === "abort") return;
 	} catch (error) {
 		debugLog("observer.error", { errorMessage: runtime.recordConsolidationStageError(ctx, "observer", error) });
@@ -388,7 +404,7 @@ export async function runConsolidationPipeline(
 
 	runtime.consolidationPhase = "dropper";
 	try {
-		await runDropperStage(pi, runtime, ctx, resolver, reflectorResult.sameRunReflections, reflectorResult.effectiveReflectionCoverageId);
+		await runDropperStage(pi, runtime, ctx, resolver, reflectorResult.sameRunReflections, reflectorResult.effectiveReflectionCoverageId, options);
 	} catch (error) {
 		debugLog("dropper.error", { errorMessage: runtime.recordConsolidationStageError(ctx, "dropper", error) });
 	}
@@ -399,12 +415,13 @@ async function runObserverStage(
 	runtime: Runtime,
 	ctx: ConsolidationCtx,
 	resolver: ModelResolver,
+	options: ConsolidationOptions,
 ): Promise<StageOutcome> {
 	const entries = ctx.sessionManager.getBranch() as Entry[];
 	const currentTokens = realContextTokens(ctx);
 	const real = currentTokens !== undefined ? realTokensSinceAnchor(entries, OM_OBSERVATIONS_RECORDED, currentTokens) : undefined;
 	const tokens = real !== undefined ? real : rawTokensSinceObservationCoverage(entries); // fallback: no usage baseline / basis change
-	if (tokens < runtime.config.observeAfterTokens) return "continue";
+	if (!options.forceObservation && tokens < runtime.config.observeAfterTokens) return "continue";
 
 	const sessionMetadata = debugSessionMetadata(ctx);
 	const sessionIdentity = sessionMetadata.sessionId ?? sessionMetadata.sessionFile;
@@ -414,7 +431,7 @@ async function runObserverStage(
 	// must not re-fire the observer every turn over the same span. Retry only
 	// after another observeAfterTokens worth of new source tokens arrives, and
 	// drop the backoff as soon as coverage advances.
-	const backoff = runtime.observerEmptyBackoff;
+	const backoff = options.forceObservation ? undefined : runtime.observerEmptyBackoff;
 	if (backoff) {
 		if (
 			sessionIdentity !== backoff.sessionIdentity
@@ -434,7 +451,9 @@ async function runObserverStage(
 	if (!resolved) return "abort";
 
 	const lastCoverageIdx = latestCoverageIndex(entries, OM_OBSERVATIONS_RECORDED);
-	const backlogEntries = sourceEntriesAfter(entries, lastCoverageIdx);
+	// A coverage limit keeps the chunk at or before the compaction cut; an unknown limit id does not limit.
+	const limitIdx = options.coverageLimitId ? entries.findIndex((entry) => entry.id === options.coverageLimitId) : -1;
+	const backlogEntries = sourceEntriesAfter(limitIdx === -1 ? entries : entries.slice(0, limitIdx + 1), lastCoverageIdx);
 
 	// Budget the text that is actually sent to the observer, including source
 	// labels and rendered message content. Complete entries are kept intact.
@@ -449,7 +468,7 @@ async function runObserverStage(
 		truncatedSourceEntryIds,
 	} = serializeSourceAddressedBranchEntries(backlogEntries, { maxTokens: maxChunkTokens });
 	if (!chunk.trim() || sourceEntryIds.length === 0) return "continue";
-	const coversUpToId = sourceEntryIds.at(-1);
+	const coversUpToId = capCoverage(entries, sourceEntryIds.at(-1), options);
 	if (!coversUpToId) return "continue";
 
 	if (sourceEntryIds.length < backlogEntries.length || truncatedSourceEntryIds.length > 0) {
@@ -493,6 +512,7 @@ async function runObserverStage(
 			priorObservations,
 			chunk,
 			allowedSourceEntryIds: sourceEntryIds,
+			signal: options.signal,
 			maxTurns: runtime.config.agentMaxTurns,
 			maxOutputTokens: runtime.config.agentMaxTokens,
 			thinkingLevel: workerThinkingLevel(runtime, worker),
@@ -528,6 +548,7 @@ async function runObserverStage(
 		coversUpToId,
 	});
 	appendEntry(pi, OM_OBSERVATIONS_RECORDED, data);
+	if (options.report) options.report.observationsRecorded += observations.length;
 	debugLog("observer.appended", { count: observations.length, coversUpToId });
 	if (shouldNotifyWorker(runtime, ctx)) ctx.ui?.notify(
 		`Observational memory: ${observations.length} observation${observations.length === 1 ? "" : "s"} recorded`,
@@ -549,7 +570,7 @@ async function runReflectorStage(
 	const reflectionTokens = real !== undefined ? real : rawTokensSinceReflectionCoverage(entries); // fallback: no usage baseline / basis change
 	if (!options.forceReflection && reflectionTokens < runtime.config.reflectAfterTokens) return { outcome: "continue", sameRunReflections: [] };
 
-	const observationCoverageId = latestCoverageMarkerId(entries, OM_OBSERVATIONS_RECORDED);
+	const observationCoverageId = capCoverage(entries, latestCoverageMarkerId(entries, OM_OBSERVATIONS_RECORDED), options);
 	if (!observationCoverageId) return { outcome: "continue", sameRunReflections: [] };
 
 	if (shouldNotifyWorker(runtime, ctx)) ctx.ui?.notify(
@@ -568,6 +589,7 @@ async function runReflectorStage(
 		reflections: folded.activeReflections,
 		knownReflectionIds: new Set(folded.reflectionsById.keys()),
 		observations: folded.activeObservations,
+		signal: options.signal,
 		maxTurns: runtime.config.agentMaxTurns,
 		maxOutputTokens: runtime.config.agentMaxTokens,
 		thinkingLevel: workerThinkingLevel(runtime, worker),
@@ -578,11 +600,12 @@ async function runReflectorStage(
 	if (data) {
 		appendEntry(pi, OM_REFLECTIONS_RECORDED, data);
 		sameRunReflections.push(...data.reflections);
+		if (options.report) options.report.reflectionsAdded += data.reflections.length;
 	}
 
 	let reviewRecorded = false;
 	if (data || options.forceReflection) {
-		const replacements = await runReviewStep(pi, runtime, ctx, resolver, observationCoverageId, new Set(sameRunReflections.map((reflection) => reflection.id)));
+		const replacements = await runReviewStep(pi, runtime, ctx, resolver, observationCoverageId, new Set(sameRunReflections.map((reflection) => reflection.id)), options);
 		if (replacements) {
 			reviewRecorded = true;
 			sameRunReflections.push(...replacements);
@@ -608,6 +631,7 @@ async function runReviewStep(
 	resolver: ModelResolver,
 	coversUpToId: string,
 	newReflectionIds: ReadonlySet<string>,
+	options: ConsolidationOptions,
 ): Promise<Reflection[] | undefined> {
 	const entries = ctx.sessionManager.getBranch() as Entry[];
 	const folded = foldLedger(entries);
@@ -644,6 +668,7 @@ async function runReviewStep(
 			retiredReflectionIds: folded.retiredReflectionIds,
 			recordedAt,
 			observations: folded.activeObservations,
+			signal: options.signal,
 			maxTurns: runtime.config.agentMaxTurns,
 			maxOutputTokens: runtime.config.agentMaxTokens,
 			thinkingLevel: workerThinkingLevel(runtime, worker),
@@ -661,12 +686,17 @@ async function runReviewStep(
 	const replacementData = result ? buildReflectionsRecordedData(result.replacements, coversUpToId) : undefined;
 	if (replacementData) {
 		appendEntry(pi, OM_REFLECTIONS_RECORDED, replacementData);
+		if (options.report) options.report.replacementsRecorded += replacementData.reflections.length;
 		wrote = true;
 	}
 	for (const retirement of result?.retirements ?? []) {
 		const data = buildReflectionsDroppedData(retirement.reflectionIds, coversUpToId, retirement.replacedBy);
 		if (!data) continue;
 		appendEntry(pi, OM_REFLECTIONS_DROPPED, data);
+		if (options.report) {
+			if (data.replacedBy) options.report.reflectionsReplaced += data.reflectionIds.length;
+			else options.report.reflectionsRetired += data.reflectionIds.length;
+		}
 		wrote = true;
 	}
 	debugLog("reflector.review_done", {
@@ -686,6 +716,7 @@ async function runDropperStage(
 	resolver: ModelResolver,
 	sameRunReflections: Reflection[],
 	sameRunReflectionCoverageId: string | undefined,
+	options: ConsolidationOptions,
 ): Promise<StageOutcome> {
 	if (!sameRunReflectionCoverageId) {
 		debugLog("dropper.waiting_for_reflection", { sameRunReflections: sameRunReflections.length });
@@ -742,12 +773,13 @@ async function runDropperStage(
 		reflections: reflectionsForDropper,
 		observations: folded.activeObservations,
 		targetTokens: runtime.config.observationsPoolTargetTokens,
+		signal: options.signal,
 		maxTurns: runtime.config.agentMaxTurns,
 		maxOutputTokens: runtime.config.agentMaxTokens,
 		thinkingLevel: workerThinkingLevel(runtime, worker),
 		modelRegistry: ctx.modelRegistry,
 	}));
-	const coversUpToId = earlierCoverageMarkerId(entries, observationCoverageId, sameRunReflectionCoverageId);
+	const coversUpToId = capCoverage(entries, earlierCoverageMarkerId(entries, observationCoverageId, sameRunReflectionCoverageId), options);
 	const data = coversUpToId && droppedIds ? buildObservationsDroppedData(droppedIds, coversUpToId) : undefined;
 	debugLog("dropper.append", {
 		droppedIdsCount: droppedIds?.length ?? 0,
@@ -755,6 +787,9 @@ async function runDropperStage(
 		dataBuilt: data !== undefined,
 		appended: data !== undefined,
 	});
-	if (data) appendEntry(pi, OM_OBSERVATIONS_DROPPED, data);
+	if (data) {
+		appendEntry(pi, OM_OBSERVATIONS_DROPPED, data);
+		if (options.report) options.report.observationsDropped += data.observationIds.length;
+	}
 	return "continue";
 }
