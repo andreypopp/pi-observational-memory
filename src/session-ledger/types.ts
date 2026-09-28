@@ -7,8 +7,11 @@ export const OM_FOLDED = "om.folded";
 export const RELEVANCE_VALUES = ["low", "medium", "high", "critical"] as const;
 export type Relevance = (typeof RELEVANCE_VALUES)[number];
 
-/** Why a reflection was retired outright. "project-instructions" retirements are reversible: see `foldLedger`. */
-export const REFLECTION_RETIREMENT_KINDS = ["stale", "duplicate", "project-instructions"] as const;
+/**
+ * Why a reflection was retired outright. "project-instructions" and "promoted" (moved into the project's
+ * AGENTS.md by /om:promote) retirements are reversible: see `foldLedger`.
+ */
+export const REFLECTION_RETIREMENT_KINDS = ["stale", "duplicate", "project-instructions", "promoted"] as const;
 export type ReflectionRetirementKind = (typeof REFLECTION_RETIREMENT_KINDS)[number];
 
 export const MEMORY_ID_PATTERN = /^[a-f0-9]{12}$/;

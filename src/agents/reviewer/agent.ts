@@ -6,10 +6,10 @@ import { debugLog } from "../../debug-log.js";
 import { hashId } from "../../ids.js";
 import { logAgentStreamError } from "../stream-errors.js";
 import { withProjectContext } from "../project-context.js";
+import { joinOrEmpty, normalizeContent } from "../worker-format.js";
 import { workerMessages } from "../worker-prompt.js";
 import { resolveWorkerStreamSimple, type StreamableModelRegistry, type WorkerStreamSimple } from "../worker-stream.js";
 import { AGENT_LOOP_MAX_TOKENS, boundedMaxTokens } from "../../model-budget.js";
-import { truncateRecordContent } from "../../serialize.js";
 import { estimateStringTokens } from "../../tokens.js";
 import {
 	isReflectionRetirementKind,
@@ -74,16 +74,6 @@ const TidyReflectionsSchema = Type.Object({
 });
 
 type TidyReflectionsArgs = Static<typeof TidyReflectionsSchema>;
-
-function joinOrEmpty(items: string[]): string {
-	return items.length ? items.join("\n") : "(none yet)";
-}
-
-function normalizeContent(content: string): string | undefined {
-	const normalized = truncateRecordContent(content.trim());
-	if (!normalized || /\r|\n/.test(normalized)) return undefined;
-	return normalized;
-}
 
 export function reflectionToReviewLine(reflection: Reflection, recordedAt: string | undefined, isNew: boolean): string {
 	return `[${reflection.id}] (recorded ${recordedAt ?? "unknown"})${isNew ? " [new]" : ""} ${reflection.content}`;

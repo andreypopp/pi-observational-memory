@@ -1,3 +1,7 @@
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { blockTokens, renderBlock } from "../src/project-memory/block.js";
 import { describe, expect, it, vi } from "vitest";
 
 import { registerStatusCommand } from "../src/commands/status.js";
@@ -28,7 +32,7 @@ function baseConfig() {
 	};
 }
 
-function setup(args: { entries: TestEntry[]; runtime?: Partial<any>; model?: unknown; contextUsage?: unknown }) {
+function setup(args: { entries: TestEntry[]; runtime?: Partial<any>; model?: unknown; contextUsage?: unknown; cwd?: string }) {
 	let handler: ((args: unknown, ctx: any) => Promise<void>) | undefined;
 	const pi = {
 		registerCommand: vi.fn((name: string, command: { handler: typeof handler }) => {
@@ -55,7 +59,7 @@ function setup(args: { entries: TestEntry[]; runtime?: Partial<any>; model?: unk
 	if (!handler) throw new Error("status handler not registered");
 	const notify = vi.fn();
 	const ctx = {
-		cwd: "/tmp/project",
+		cwd: args.cwd ?? "/tmp/project",
 		ui: { notify },
 		sessionManager: { getBranch: () => args.entries },
 		model: args.model,
@@ -69,6 +73,25 @@ function setup(args: { entries: TestEntry[]; runtime?: Partial<any>; model?: unk
 }
 
 describe("V3 /om:status", () => {
+	it("shows the promoted block only when the project's context file has one", async () => {
+		const dir = realpathSync(mkdtempSync(join(tmpdir(), "om-status-")));
+		try {
+			mkdirSync(join(dir, ".git"));
+			writeFileSync(join(dir, ".git", "HEAD"), "ref: refs/heads/main\n");
+			mkdirSync(join(dir, "sub"));
+			writeFileSync(join(dir, "AGENTS.md"), "# Rules\n");
+			const without = await setup({ entries: [], cwd: join(dir, "sub") }).run();
+			expect(without).not.toContain("Promoted:");
+
+			const lines = ["- [aaaaaaaaaaaa] Fact A", "- [bbbbbbbbbbbb] Fact B"];
+			writeFileSync(join(dir, "AGENTS.md"), `# Rules\n\n${renderBlock(lines)}\n`);
+			const output = await setup({ entries: [], cwd: join(dir, "sub") }).run();
+			expect(output).toContain(`Promoted: 2 lines (~${blockTokens(lines)} tokens) in ../AGENTS.md`);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
 	it("renders concise no-memory status without V2 committed/pending language", async () => {
 		const output = await setup({ entries: [] }).run();
 

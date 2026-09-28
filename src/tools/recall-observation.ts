@@ -10,13 +10,13 @@ import {
 	type RecalledObservation,
 	type RecalledReflection,
 } from "../session-ledger/recall.js";
-import type { Observation, Reflection, ReflectionRetirementKind } from "../session-ledger/index.js";
+import { displayPath } from "../project-memory/target.js";
+import { recallFromProjectMemory, type ProjectMemoryRecall } from "../project-memory/recall.js";
+import { MEMORY_ID_PATTERN, type Observation, type Reflection, type ReflectionRetirementKind } from "../session-ledger/index.js";
 import { renderRecallSourceEntries, renderRecallSourceEntry } from "../serialize.js";
 import { estimateEntryTokens } from "../tokens.js";
 
 export const RECALL_OBSERVATION_TOOL_NAME = "recall";
-
-const MEMORY_ID_PATTERN = /^[a-f0-9]{12}$/;
 
 type RecallObservationToolStatus =
 	| "ok"
@@ -28,7 +28,7 @@ type RecallObservationToolStatus =
 
 type ObservationDetails = Pick<Observation, "id" | "content" | "timestamp" | "relevance"> & { status?: "active" | "dropped" };
 type ReflectionDetails = Pick<Reflection, "id" | "content" | "supportingObservationIds"> & {
-	reflectionIndex: number;
+	reflectionIndex?: number;
 	status?: "retired";
 	retirementKind?: ReflectionRetirementKind;
 	replacedBy?: string;
@@ -47,8 +47,8 @@ export type RecallSourceEntryDetails = {
 
 type RecallObservationMatchDetails = {
 	status: "active" | "dropped" | "source_unavailable" | "no_source";
-	observationEntryId: string;
-	observationRecordIndex: number;
+	observationEntryId?: string;
+	observationRecordIndex?: number;
 	observation: ObservationDetails;
 	sourceEntryIds?: string[];
 	sourceEntries?: RecallSourceEntryDetails[];
@@ -77,6 +77,12 @@ export type RecallObservationToolDetails = {
 	nonSourceEntryIds: string[];
 	sourceCharacterCount?: number;
 	message?: string;
+	/** Set when the id came from a `.memory/` store instead of the branch ledger. */
+	projectMemory?: {
+		memoryDir: string;
+		editedIds: string[];
+		unavailableSessions: string[];
+	};
 };
 
 function pad(n: number): string {
@@ -160,7 +166,7 @@ function reflectionDetails(match: RecalledReflection): ReflectionDetails {
 		id: reflection.id,
 		content: reflection.content,
 		supportingObservationIds: reflection.supportingObservationIds,
-		reflectionIndex: match.reflectionRecordIndex,
+		...(match.reflectionRecordIndex !== undefined ? { reflectionIndex: match.reflectionRecordIndex } : {}),
 		...(match.status === "retired" ? { status: "retired" as const } : {}),
 		...(match.retirementKind ? { retirementKind: match.retirementKind } : {}),
 		...(match.replacedBy ? { replacedBy: match.replacedBy } : {}),
@@ -174,8 +180,7 @@ function observationMatchDetails(match: RecalledObservation, includeSourceConten
 	const status = unavailable ? "source_unavailable" : match.sourceEntries.length === 0 ? "no_source" : match.status;
 	return {
 		status,
-		observationEntryId: match.observationEntryId,
-		observationRecordIndex: match.observationRecordIndex,
+		...(match.observationEntryId !== undefined ? { observationEntryId: match.observationEntryId, observationRecordIndex: match.observationRecordIndex } : {}),
 		observation: observationDetails(match.observation, match.status),
 		sourceEntryIds: match.sourceEntryIds,
 		sourceEntries: match.sourceEntries.map((entry) => sourceEntryDetails(entry, includeSourceContent)),
@@ -230,6 +235,7 @@ const RETIREMENT_KIND_LABELS: Record<ReflectionRetirementKind, string> = {
 	stale: "stale",
 	duplicate: "duplicate",
 	"project-instructions": "covered by project instructions",
+	promoted: "promoted to project memory",
 };
 
 /** "retired", plus the retirement kind when the retirement named one. */
@@ -449,6 +455,11 @@ function noteRows(details: RecallObservationToolDetails, sources: RecallSourceEn
 		notes.push(noteLine("not found", `no observation or reflection with id ${details.memoryId} was found on the current branch`));
 		return notes;
 	}
+	if (details.projectMemory) {
+		notes.push(noteLine("project memory", `from ${details.projectMemory.memoryDir}/`));
+		if (details.projectMemory.editedIds.length > 0) notes.push(noteLine("edited", `text edited since promotion: ${details.projectMemory.editedIds.join(", ")}`));
+		for (const session of details.projectMemory.unavailableSessions) notes.push(noteLine("other session", `sources are in session ${session}, not available on this machine`));
+	}
 	if (details.collision) notes.push(noteLine("id collision", `multiple memory items share ${details.memoryId}`));
 	for (const reflection of details.reflections) {
 		if (reflection.status !== "retired") continue;
@@ -494,11 +505,38 @@ export function formatRecallRenderedResultForTui(result: AgentToolResult<RecallO
 	return body ? `\n${body}` : "";
 }
 
+/** Render a recall served from `.memory/`: the usual layout, labelled, with notes on edits and other sessions. */
+function renderProjectMemoryResult(recall: ProjectMemoryRecall, cwd: string): ReturnType<typeof textResult> {
+	const found = renderFoundResult(recall.result);
+	const memoryDir = displayPath(recall.memoryDir, cwd);
+	const notes = [
+		...(recall.editedIds.length > 0 ? [`Text edited since promotion: ${recall.editedIds.join(", ")}.`] : []),
+		...recall.unavailableSessions.map((session) => `Sources are in session ${session}, not available on this machine.`),
+	];
+	const text = [`From project memory (${memoryDir}/):`, found.content[0].text, ...notes].join("\n\n");
+	return textResult(text, { ...found.details, projectMemory: { memoryDir, editedIds: recall.editedIds, unavailableSessions: recall.unavailableSessions } });
+}
+
+function projectMemoryRecall(ctx: { cwd?: unknown; sessionManager: unknown }, memoryId: string, branchEntries: Entry[]): ProjectMemoryRecall | undefined {
+	if (typeof ctx.cwd !== "string") return undefined;
+	const sessionManager = ctx.sessionManager as { getSessionId?: () => string; getSessionDir?: () => string };
+	try {
+		return recallFromProjectMemory(ctx.cwd, memoryId, {
+			branchEntries,
+			sessionId: sessionManager.getSessionId?.(),
+			sessionDir: sessionManager.getSessionDir?.(),
+		});
+	} catch {
+		return undefined;
+	}
+}
+
 export const recallObservationTool = defineTool({
 	name: RECALL_OBSERVATION_TOOL_NAME,
 	label: "Recall memory evidence",
 	description:
 		"Recover exact evidence and source context behind a compacted observational-memory observation or reflection id on the current branch. " +
+		"Ids from the promoted-memory block of the project's AGENTS.md work too. " +
 		"Use when compressed memory is important and original source context is needed before acting.",
 	promptSnippet: "Use recall(<id>) to recover exact source context behind compacted memory observations/reflections when precision matters.",
 	promptGuidelines: [
@@ -512,7 +550,7 @@ export const recallObservationTool = defineTool({
 	parameters: Type.Object({
 		id: Type.String({
 			pattern: "^[a-f0-9]{12}$",
-			description: "12-character lowercase hex observation or reflection id shown in compacted memory, /om:view, or a previous recall result. Must be a specific id; this tool does not search by topic.",
+			description: "12-character lowercase hex observation or reflection id shown in compacted memory, /om:view, the promoted block of AGENTS.md, or a previous recall result. Must be a specific id; this tool does not search by topic.",
 		}),
 	}),
 	renderCall(args) {
@@ -530,6 +568,8 @@ export const recallObservationTool = defineTool({
 		const branchEntries = ctx.sessionManager.getBranch() as Entry[];
 		const result = recallMemorySources(branchEntries, memoryId);
 		if (result.status === "not_found") {
+			const fromProject = projectMemoryRecall(ctx, memoryId, branchEntries);
+			if (fromProject) return renderProjectMemoryResult(fromProject, ctx.cwd);
 			const message = `No observation or reflection with id ${memoryId} was found on the current branch.`;
 			return textResult(message, emptyDetails("not_found", memoryId, message));
 		}

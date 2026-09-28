@@ -137,3 +137,27 @@ describe("project context sources", () => {
 		expect(loader.loadProjectContextFiles).not.toHaveBeenCalled();
 	});
 });
+
+describe("context file overrides from /om:promote", () => {
+	it("applies OM's content for written paths on top of every source, and appends a new file", () => {
+		const runtime = new Runtime();
+		runtime.contextFileOverrides.set(CWD.path, "promoted");
+		expect(resolveProjectContextFiles(runtime, "/repo/pkg")).toEqual({ files: [GLOBAL, { path: CWD.path, content: "promoted" }], source: "loader" });
+
+		captureProjectContextFiles(runtime, [GLOBAL, CWD], "snapshot");
+		expect(resolveProjectContextFiles(runtime, "/repo/pkg").files[1]).toEqual({ path: CWD.path, content: "promoted" });
+		expect(runtime.projectContext?.files[1]).toEqual(CWD);
+
+		runtime.contextFileOverrides.set(REPO.path, "created");
+		expect(resolveProjectContextFiles(runtime, "/repo/pkg").files.at(-1)).toEqual({ path: REPO.path, content: "created" });
+	});
+
+	it("changes nothing without overrides or with the feature off", () => {
+		const runtime = new Runtime();
+		captureProjectContextFiles(runtime, [GLOBAL, CWD], "snapshot");
+		expect(resolveProjectContextFiles(runtime, "/repo")).toBe(runtime.projectContext);
+		runtime.config.projectContext = false;
+		runtime.contextFileOverrides.set(CWD.path, "promoted");
+		expect(resolveProjectContextFiles(runtime, "/repo")).toEqual({ files: [], source: "none" });
+	});
+});

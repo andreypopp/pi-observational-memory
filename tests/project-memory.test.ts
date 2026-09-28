@@ -1,0 +1,283 @@
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+
+import { hashId } from "../src/ids.js";
+import {
+	BlockMarkerError,
+	blockTokens,
+	parseContextFile,
+	PROMOTED_END,
+	PROMOTED_START,
+	renderBlock,
+	renderBlockLine,
+	replaceBlock,
+} from "../src/project-memory/block.js";
+import { memoryClosure } from "../src/project-memory/closure.js";
+import { findSessionFile, readSessionEntries } from "../src/project-memory/sessions.js";
+import {
+	findMemoryDirFor,
+	memoryDirCandidates,
+	parseMemoryFile,
+	readMemoryRecord,
+	renderMemoryFile,
+	writeNewMemoryFiles,
+	type MemoryRecord,
+} from "../src/project-memory/store.js";
+import { resolvePromoteTarget } from "../src/project-memory/target.js";
+import { observation, reflection } from "./fixtures/session.js";
+
+const dirs: string[] = [];
+function tempDir(): string {
+	const dir = realpathSync(mkdtempSync(join(tmpdir(), "om-promote-")));
+	dirs.push(dir);
+	return dir;
+}
+afterEach(() => {
+	for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+});
+
+const REF_CONTENT = "Throwaway tmux servers must be addressed with -S <resolved path>, never -L.";
+const REF_ID = hashId(REF_CONTENT);
+const OBS_CONTENT = "User said: never use -L\nfor throwaway servers.";
+const OBS_ID = hashId(OBS_CONTENT);
+const SESSION = "01a0bfcf-d4de-739b-b7dd-5feda3a16ab8";
+
+describe("managed block", () => {
+	it("appends a block after a blank line when markers are absent, and round-trips", () => {
+		const lines = [renderBlockLine(REF_ID, REF_CONTENT)];
+		const next = replaceBlock("# Project\n\nRules.\n", lines);
+
+		expect(next).toBe(`# Project\n\nRules.\n\n${renderBlock(lines)}\n`);
+		const parsed = parseContextFile(next);
+		expect(parsed.hasBlock).toBe(true);
+		expect(parsed.lines).toEqual([{ id: REF_ID, content: REF_CONTENT, raw: lines[0], hasId: true }]);
+		expect(parsed.outside).toBe("# Project\n\nRules.\n\n\n");
+	});
+
+	it("creates a file body for empty content and adds the missing newline before appending", () => {
+		expect(replaceBlock("", [])).toBe(`${renderBlock([])}\n`);
+		expect(replaceBlock("Rules.", [])).toBe(`Rules.\n\n${renderBlock([])}\n`);
+	});
+
+	it("rewrites only the text between the markers, keeping BOM and CRLF", () => {
+		const content = `\uFEFF# Title\r\n\r\n${PROMOTED_START}\r\n## Promoted memory\r\n- [${REF_ID}] old\r\n${PROMOTED_END}\r\nAfter.\r\n`;
+		const next = replaceBlock(content, ["- [aaaaaaaaaaaa] new"]);
+
+		expect(next.startsWith("\uFEFF# Title\r\n\r\n")).toBe(true);
+		expect(next.endsWith(`${PROMOTED_END}\r\nAfter.\r\n`)).toBe(true);
+		expect(next).toContain("\r\n- [aaaaaaaaaaaa] new\r\n");
+		expect(next).not.toContain("old");
+	});
+
+	it("keeps hand-edited lines: an id keeps its edited text, a line without id gets a content hash", () => {
+		const content = `${PROMOTED_START}\n## Promoted memory\n- [${REF_ID}] edited by hand  \n- Written without an id\n\n${PROMOTED_END}\n`;
+		const parsed = parseContextFile(content);
+
+		expect(parsed.lines).toEqual([
+			{ id: REF_ID, content: "edited by hand", raw: `- [${REF_ID}] edited by hand`, hasId: true },
+			{ id: hashId("Written without an id"), content: "Written without an id", raw: "- Written without an id", hasId: false },
+		]);
+	});
+
+	it("refuses unbalanced markers", () => {
+		expect(() => parseContextFile(`${PROMOTED_START}\n- x\n`)).toThrow(BlockMarkerError);
+		expect(() => parseContextFile(`${PROMOTED_END}\n${PROMOTED_START}\n`)).toThrow(BlockMarkerError);
+		expect(() => replaceBlock(`${PROMOTED_START}\n${PROMOTED_END}\n${PROMOTED_START}\n`, [])).toThrow(BlockMarkerError);
+	});
+
+	it("counts the whole rendered block in the token estimate", () => {
+		expect(blockTokens([])).toBe(Math.ceil(renderBlock([]).length / 4));
+	});
+});
+
+describe("promote target", () => {
+	it("uses the repository root and Pi's candidate order", () => {
+		const root = tempDir();
+		mkdirSync(join(root, ".git"));
+		writeFileSync(join(root, ".git", "HEAD"), "ref: refs/heads/main\n");
+		mkdirSync(join(root, "pkg", "sub"), { recursive: true });
+		writeFileSync(join(root, "CLAUDE.md"), "claude");
+		expect(resolvePromoteTarget(join(root, "pkg", "sub"))).toEqual({
+			root,
+			contextPath: join(root, "CLAUDE.md"),
+			contextExists: true,
+			memoryDir: join(root, ".memory"),
+		});
+		writeFileSync(join(root, "AGENTS.md"), "agents");
+		expect(resolvePromoteTarget(root).contextPath).toBe(join(root, "AGENTS.md"));
+		writeFileSync(join(root, "AGENTS.override.md"), "override");
+		expect(resolvePromoteTarget(root).contextPath).toBe(join(root, "AGENTS.override.md"));
+	});
+
+	it("creates AGENTS.md at the root when no context file exists, and uses cwd outside git", () => {
+		const dir = tempDir();
+		expect(resolvePromoteTarget(dir)).toEqual({ root: dir, contextPath: join(dir, "AGENTS.md"), contextExists: false, memoryDir: join(dir, ".memory") });
+	});
+
+	it("targets the main worktree from a linked worktree", () => {
+		const base = tempDir();
+		const main = join(base, "main");
+		const linked = join(base, "feature");
+		mkdirSync(join(main, ".git", "worktrees", "feature"), { recursive: true });
+		writeFileSync(join(main, ".git", "HEAD"), "ref: refs/heads/main\n");
+		writeFileSync(join(main, ".git", "worktrees", "feature", "HEAD"), "ref: refs/heads/feature\n");
+		writeFileSync(join(main, ".git", "worktrees", "feature", "commondir"), "../..\n");
+		mkdirSync(linked);
+		writeFileSync(join(linked, ".git"), `gitdir: ${join(main, ".git", "worktrees", "feature")}\n`);
+		writeFileSync(join(linked, "AGENTS.md"), "worktree copy");
+
+		expect(resolvePromoteTarget(linked)).toEqual({
+			root: main,
+			contextPath: join(main, "AGENTS.md"),
+			contextExists: false,
+			memoryDir: join(main, ".memory"),
+			linkedWorktreeRoot: linked,
+		});
+	});
+});
+
+describe(".memory store", () => {
+	const reflectionRecord: MemoryRecord = {
+		kind: "reflection",
+		id: REF_ID,
+		content: REF_CONTENT,
+		session: SESSION,
+		replaces: ["837779b4d48b", "bb136694d4c2"],
+		supportingObservationIds: [OBS_ID],
+		promotedAt: "2026-09-28T16:10:00.000Z",
+	};
+	const observationRecord: MemoryRecord = {
+		kind: "observation",
+		id: OBS_ID,
+		content: OBS_CONTENT,
+		timestamp: "2026-09-27 00:46",
+		relevance: "critical",
+		session: SESSION,
+		sourceEntryIds: ["9c1e22f0", "4ab7d013"],
+	};
+
+	it("renders the documented layout", () => {
+		expect(renderMemoryFile(reflectionRecord)).toBe([
+			"---",
+			`id: ${REF_ID}`,
+			"kind: reflection",
+			`session: ${SESSION}`,
+			"replaces: [837779b4d48b, bb136694d4c2]",
+			`supportingObservationIds: [${OBS_ID}]`,
+			"promotedAt: 2026-09-28T16:10:00.000Z",
+			"---",
+			REF_CONTENT,
+			"",
+			"<!-- om:links -->",
+			`- recall: \`recall ${REF_ID}\``,
+			"- replaces: [837779b4d48b](837779b4d48b.md), [bb136694d4c2](bb136694d4c2.md)",
+			`- evidence: [${OBS_ID}](${OBS_ID}.md)`,
+			"",
+		].join("\n"));
+		expect(renderMemoryFile(observationRecord)).toBe(`---\nid: ${OBS_ID}\nkind: observation\ntimestamp: 2026-09-27 00:46\nrelevance: critical\nsession: ${SESSION}\nsourceEntryIds: [9c1e22f0, 4ab7d013]\n---\n${OBS_CONTENT}\n`);
+	});
+
+	it("round-trips reflections and multi-line observations, also through CRLF", () => {
+		expect(parseMemoryFile(renderMemoryFile(reflectionRecord))).toEqual({ ...reflectionRecord, bodyMatchesId: true });
+		expect(parseMemoryFile(renderMemoryFile(observationRecord))).toEqual({ ...observationRecord, bodyMatchesId: true });
+		expect(parseMemoryFile(renderMemoryFile(observationRecord).replace(/\n/g, "\r\n"))).toEqual({ ...observationRecord, bodyMatchesId: true });
+	});
+
+	it("notes an edited body and ignores invalid session ids", () => {
+		const edited = renderMemoryFile(reflectionRecord).replace(REF_CONTENT, "Edited text").replace(SESSION, "../../etc");
+		const parsed = parseMemoryFile(edited)!;
+		expect(parsed.content).toBe("Edited text");
+		expect(parsed.bodyMatchesId).toBe(false);
+		expect(parsed).not.toHaveProperty("session");
+		expect(parseMemoryFile("no frontmatter")).toBeUndefined();
+		expect(parseMemoryFile("---\nid: nothex\nkind: reflection\n---\nx\n")).toBeUndefined();
+	});
+
+	it("writes new files only and never rewrites an existing one", () => {
+		const dir = join(tempDir(), ".memory");
+		expect(writeNewMemoryFiles(dir, [reflectionRecord])).toEqual([REF_ID]);
+		writeFileSync(join(dir, `${REF_ID}.md`), "hand edited");
+		expect(writeNewMemoryFiles(dir, [reflectionRecord, observationRecord])).toEqual([OBS_ID]);
+		expect(readFileSync(join(dir, `${REF_ID}.md`), "utf8")).toBe("hand edited");
+		expect(readMemoryRecord(dir, OBS_ID)?.content).toBe(OBS_CONTENT);
+		expect(readMemoryRecord(dir, "../../x")).toBeUndefined();
+	});
+
+	it("finds the nearest .memory directory holding an id", () => {
+		const root = tempDir();
+		const nested = join(root, "a", "b");
+		mkdirSync(join(nested, ".memory"), { recursive: true });
+		writeNewMemoryFiles(join(root, ".memory"), [observationRecord]);
+		const candidates = memoryDirCandidates(nested);
+		expect(candidates.slice(0, 3)).toEqual([join(nested, ".memory"), join(root, "a", ".memory"), join(root, ".memory")]);
+		expect(findMemoryDirFor(candidates, OBS_ID)).toBe(join(root, ".memory"));
+		writeNewMemoryFiles(join(nested, ".memory"), [observationRecord]);
+		expect(findMemoryDirFor(candidates, OBS_ID)).toBe(join(nested, ".memory"));
+	});
+});
+
+describe("memory closure", () => {
+	it("follows replaces chains and supporting observations, including retired and dropped records", () => {
+		const dir = join(tempDir(), ".memory");
+		const obsA = observation("aaaaaaaaaaaa");
+		const obsB = observation("bbbbbbbbbbbb");
+		const old = reflection("111111111111", ["bbbbbbbbbbbb"]);
+		const older = reflection("000000000000", ["cccccccccccc"]);
+		const promoted = { ...reflection("222222222222", ["aaaaaaaaaaaa"]), replaces: ["111111111111"] };
+		const oldWithChain = { ...old, replaces: ["000000000000"] };
+		const closure = memoryClosure(
+			[{ kind: "reflection", id: promoted.id, content: promoted.content, replaces: promoted.replaces, supportingObservationIds: promoted.supportingObservationIds, promotedAt: "t" }],
+			{
+				reflectionsById: new Map([[old.id, oldWithChain], [older.id, older]]),
+				observationsById: new Map([[obsA.id, obsA], [obsB.id, obsB]]),
+				sessionId: SESSION,
+				memoryDir: dir,
+			},
+		);
+
+		expect(closure.records.map((record) => record.id)).toEqual(["222222222222", "111111111111", "aaaaaaaaaaaa", "000000000000", "bbbbbbbbbbbb"]);
+		expect(closure.records.find((record) => record.id === "111111111111")).toMatchObject({ session: SESSION, replaces: ["000000000000"] });
+		expect(closure.missingIds).toEqual(["cccccccccccc"]);
+		expect(closure.existingIds).toEqual([]);
+	});
+
+	it("uses records that exist only in .memory and skips files already there", () => {
+		const dir = join(tempDir(), ".memory");
+		writeNewMemoryFiles(dir, [
+			{ kind: "reflection", id: "111111111111", content: "Old", session: SESSION, supportingObservationIds: ["aaaaaaaaaaaa"] },
+		]);
+		const obsA = observation("aaaaaaaaaaaa");
+		const closure = memoryClosure(
+			[{ kind: "reflection", id: "222222222222", content: "New", replaces: ["111111111111"], supportingObservationIds: [], promotedAt: "t" }],
+			{ reflectionsById: new Map(), observationsById: new Map([[obsA.id, obsA]]), memoryDir: dir },
+		);
+
+		expect(closure.records.map((record) => record.id)).toEqual(["222222222222", "aaaaaaaaaaaa"]);
+		expect(closure.existingIds).toEqual(["111111111111"]);
+	});
+});
+
+describe("cross-session sources", () => {
+	it("finds a session file in any of the project's session dirs and reads only needed entries", () => {
+		const root = tempDir();
+		const current = join(root, "--project-a--");
+		const other = join(root, "--project-b--");
+		mkdirSync(current);
+		mkdirSync(other);
+		const file = join(other, `2026-09-27T00-00-00-000Z_${SESSION}.jsonl`);
+		writeFileSync(file, [
+			JSON.stringify({ type: "session", id: SESSION }),
+			JSON.stringify({ type: "message", id: "9c1e22f0", message: { role: "user", content: "hi" } }),
+			JSON.stringify({ type: "message", id: "ffffffff", message: { role: "user", content: "other" } }),
+			"{\"type\":\"message\",\"id\":\"4ab7d013\",\"trunc",
+		].join("\n"));
+
+		expect(findSessionFile(current, SESSION)).toBe(file);
+		expect(findSessionFile(current, "../../etc")).toBeUndefined();
+		expect(findSessionFile(current, "0".repeat(36))).toBeUndefined();
+		expect(readSessionEntries(file, new Set(["9c1e22f0", "4ab7d013"])).map((entry) => entry.id)).toEqual(["9c1e22f0"]);
+		expect(readSessionEntries(file, new Set(["9c1e22f0"]), 20)).toEqual([]);
+	});
+});

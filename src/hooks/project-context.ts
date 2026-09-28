@@ -48,12 +48,32 @@ function piContextFileLoader(): ContextFileLoader | undefined {
 }
 
 /**
+ * Replace the content of files /om:promote wrote with what it wrote, since Pi's copy stays stale until
+ * /reload; a written file Pi did not load (newly created) is appended. Unchanged without overrides.
+ */
+export function applyContextFileOverrides(
+	resolved: ResolvedProjectContextFiles,
+	overrides: ReadonlyMap<string, string> | undefined,
+): ResolvedProjectContextFiles {
+	if (!overrides || overrides.size === 0 || resolved.source === "none") return resolved;
+	const files = resolved.files.map((file) => (overrides.has(file.path) ? { path: file.path, content: overrides.get(file.path)! } : file));
+	for (const [path, content] of overrides) {
+		if (!files.some((file) => file.path === path)) files.push({ path, content });
+	}
+	return { files, source: resolved.source };
+}
+
+/**
  * The context files the reflector should see. Prefers the latest snapshot or command refresh; without
  * one (a fresh Runtime after /reload, or a run started by `triggerTurn`, which skips before_agent_start)
- * it loads them the way Pi's resource loader does.
+ * it loads them the way Pi's resource loader does. Files /om:promote wrote are applied on top.
  */
 export function resolveProjectContextFiles(runtime: Runtime, cwd: string): ResolvedProjectContextFiles {
 	if (runtime.config.projectContext === false) return { files: [], source: "none" };
+	return applyContextFileOverrides(loadProjectContextFiles(runtime, cwd), runtime.contextFileOverrides);
+}
+
+function loadProjectContextFiles(runtime: Runtime, cwd: string): ResolvedProjectContextFiles {
 	if (runtime.projectContext) return runtime.projectContext;
 	const loader = piContextFileLoader();
 	if (!loader) return { files: [], source: "none" };

@@ -123,6 +123,13 @@ export class Runtime {
 	reflectRequest: ReflectRequest | undefined;
 	/** Context files from the latest `before_agent_start` snapshot or /om:reflect refresh; see hooks/project-context. */
 	projectContext: { files: ProjectContextFile[]; source: "snapshot" | "command" } | undefined;
+	/**
+	 * Context files /om:promote wrote, by path. Pi caches context files until /reload, so the reflector sees
+	 * OM's content for these paths on top of every source; a new Runtime starts without overrides.
+	 */
+	contextFileOverrides = new Map<string, string>();
+	/** True while /om:promote runs; a second one is refused. */
+	promoteInFlight = false;
 	resolveFailureNotified = false;
 	reflectorModelFailureNotified = false;
 	lastObserverError: string | undefined;

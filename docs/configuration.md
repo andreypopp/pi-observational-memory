@@ -81,6 +81,7 @@ You can omit everything. Defaults work for ordinary sessions, and if `model` is 
 | `reflectorModel.thinking` | enum | unset; falls back to `model.thinking` then `low` | Optional reasoning/thinking level for reflector calls on `reflectorModel`. |
 | `projectContext` | boolean | `true` | Shows the session's context files (AGENTS.md, CLAUDE.md, …) to both reflector calls. `false` leaves worker inputs unchanged. |
 | `projectContextMaxTokens` | positive integer | derived | Maximum estimated tokens of project context per reflector call. Unset: `max(20000, floor(contextWindow * 0.1))` of the reflector model, or `20000` when unknown. |
+| `promoteMaxTokens` | positive integer | `1500` | Maximum estimated tokens of the managed block `/om:promote` writes into the project's AGENTS.md. |
 | `showWorkerNotifications` | boolean | `true` | Shows routine observer, reflector, and dropper progress notifications. |
 | `passive` | boolean | `false` | Disables proactive background memory and auto-compaction triggers. |
 | `debugLog` | boolean | `false` | Writes best-effort per-session extension debug events to Pi's agent directory. |
@@ -242,7 +243,7 @@ Default: `true`.
 
 Pi loads the project's context files (the global `~/.pi/agent/AGENTS.md`, then AGENTS.md or CLAUDE.md from the repository root down to the working directory) into every main-agent call. A reflection that restates them is paid twice. With `projectContext` on, both reflector calls see those files as `PROJECT INSTRUCTIONS`: crystallize does not record what they already say, and the review retires reflections they fully cover, with retirement kind `project-instructions`. Such retirements are reversible: if the rule later leaves AGENTS.md, crystallize may record the same reflection again and it becomes active. The observer and dropper never see the files.
 
-The files come from what Pi reported at `before_agent_start` (honouring `--no-context-files`), from `/om:reflect`, or from Pi's own loader when neither is available yet. `/om:status` shows a `Project context:` line when files are in use, and the debug log records a `reflector.project_context` event per call.
+The files come from what Pi reported at `before_agent_start` (honouring `--no-context-files`), from `/om:reflect`, or from Pi's own loader when neither is available yet. A file `/om:promote` wrote is shown with OM's new content until the runtime reloads, because Pi keeps its copy until `/reload`. `/om:status` shows a `Project context:` line when files are in use, and the debug log records a `reflector.project_context` event per call.
 
 Set `false` to turn this off; the reflector inputs are then exactly what they were without the feature.
 
@@ -251,6 +252,12 @@ Set `false` to turn this off; the reflector inputs are then exactly what they we
 Default: unset, meaning `max(20000, floor(contextWindow * 0.1))` estimated tokens of the reflector model's context window, or `20000` when the window is unknown.
 
 Files are kept whole. The budget fills from the most specific file (nearest the working directory) backwards, so the global file is the first to go; left-out files are listed by path and size.
+
+## `promoteMaxTokens`
+
+Default: `1500`.
+
+The whole managed block `/om:promote` writes (markers, heading and lines) must stay within this many estimated tokens (characters / 4). The block is loaded into every session and subagent of the project, so keep it small; the promote call merges, rewrites and drops lines to fit. `/om:status` shows the block's size as `Promoted: N lines (~T tokens) in <path>`.
 
 ## `showWorkerNotifications`
 

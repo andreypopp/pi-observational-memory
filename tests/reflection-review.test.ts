@@ -70,6 +70,16 @@ describe("reflection review agent", () => {
 		expect(systemPrompt).toContain("Never invent");
 	});
 
+	it("never offers the \"promoted\" retirement kind, which belongs to /om:promote", async () => {
+		let schemaText = "";
+		const loop = fakeAgentLoop((_prompts, context) => {
+			schemaText = JSON.stringify(context.tools[0].parameters);
+		});
+		await runReflectionReview({ ...baseArgs(), agentLoop: loop });
+		expect(schemaText).toContain("project-instructions");
+		expect(schemaText).not.toContain("promoted");
+	});
+
 	it("returns undefined when the model changes nothing", async () => {
 		const { result } = await review([]);
 		expect(result).toBeUndefined();

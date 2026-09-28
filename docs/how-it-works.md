@@ -17,6 +17,7 @@ V3 is ledger-centered: memory state is reconstructed by folding V3 ledger entrie
 | `session_before_compact` hook | Build the V3 compaction payload deterministically. |
 | `/om:status` | Show ledger counts, drift, progress clocks, and worker state. |
 | `/om:reflect` | Force a full memory pass, then a full-fold compaction. |
+| `/om:promote` | Promote durable reflections into the project's AGENTS.md and `.memory/`, after a preview and confirmation. |
 | `/om:view` | Show visible or full memory content and attempt to copy the rendered memory text. |
 | `recall` tool | Recover source evidence for a memory id. |
 
@@ -152,12 +153,12 @@ customType: "om.reflections.dropped"
 data: {
   reflectionIds: string[];
   replacedBy?: string;
-  kind?: "stale" | "duplicate" | "project-instructions"; // plain retirements only
+  kind?: "stale" | "duplicate" | "project-instructions" | "promoted"; // plain retirements only
   coversUpToId: string;
 }
 ```
 
-Retirements are tombstones for reflection ids, kept even when the reflection record is unknown or recorded later. The only exception is kind `project-instructions`: a later `om.reflections.recorded` entry (in branch order) that contains the id re-activates it. A permanent retirement is never turned back into a reversible one. Entries without `kind` keep the pre-kind shape byte for byte. The fold keeps every reflection record (`reflections`, `reflectionsById`) and exposes `activeReflections`, `retiredReflectionIds`, `reflectionReplacedBy`, and `reflectionRetirementKind`; projections and recall apply the same re-activation rule. Observer, reflector, and dropper inputs, dropper coverage, and projections use active reflections only. Retirements do not advance any progress clock.
+Retirements are tombstones for reflection ids, kept even when the reflection record is unknown or recorded later. The only exceptions are kinds `project-instructions` and `promoted`: a later `om.reflections.recorded` entry (in branch order) that contains the id re-activates it. A permanent retirement is never turned back into a reversible one. Entries without `kind` keep the pre-kind shape byte for byte. The fold keeps every reflection record (`reflections`, `reflectionsById`) and exposes `activeReflections`, `retiredReflectionIds`, `reflectionReplacedBy`, and `reflectionRetirementKind`; projections and recall apply the same re-activation rule. Observer, reflector, and dropper inputs, dropper coverage, and projections use active reflections only. Retirements do not advance any progress clock.
 
 ### Folded compaction details
 
@@ -314,6 +315,7 @@ Shows:
 - dropper state explaining whether the active pool is under target or waiting for the next successful reflection;
 - reflection pool token total;
 - `Project context: N file(s), ~T tokens`, only when the reflector would see context files;
+- `Promoted: N lines (~T tokens) in <path>`, only when the project's context file has a promoted block;
 - passive mode;
 - worker in-flight flags;
 - last observer and reflect/drop errors.
@@ -340,6 +342,17 @@ Forces a memory pass and a full-fold compaction, so cleanup shows up in the agen
 3. The hook re-reads the live branch and builds the compaction projection with `forceFullFold`. Worker failures are recorded as usual, and the fold still happens. An empty projection still delegates to Pi's native summarizer.
 4. `onComplete` reports observations recorded and dropped, reflections added, replaced, and retired, and summary sizes before (latest visible memory) and after. If Pi rejects before the hook runs ("Nothing to compact", "Already compacted"), the command reports that there is nothing to compact yet. Both paths clear the request and `compactInFlight`.
 
+### `/om:promote`
+
+1. Guards: refuses while a compaction, `/om:reflect` or another promotion runs; waits for running consolidation, then holds the consolidation lock (so no worker starts) for the model call and again for the apply, not while the confirm dialog is open.
+2. Target: the context file Pi loads from the git worktree root, in Pi's order (`AGENTS.override.md`, `AGENTS.md`, `AGENTS.MD`, `CLAUDE.md`, `CLAUDE.MD`); `AGENTS.md` there when none exists; `ctx.cwd` outside git. In a linked worktree (`.git` file whose gitdir's `commondir` is another checkout's `.git`) the target is the main worktree's root, and the preview says so: a new context file inside a linked worktree would shadow the main one. OM reads `.git`, `gitdir` and `commondir` itself. Unbalanced markers stop the command.
+3. Model call (`src/agents/promoter`): the reflector model, else the memory model, with the fallback retry, instructions through `workerMessages`. Input: the block's lines with ids (hand-written lines without an id get a content hash), the session's context files with the block cut out, active reflections with record times, and the budget. The `set_promoted_block` tool takes the full new block (`{ keepId }` or `{ content, fromIds }` per line) and rejects it with feedback when: a keepId is not a block line; a fromId is neither an active reflection nor a block line; an id is used twice; content is empty or multi-line; a new line's id (content hash) is retired, one of its own fromIds, or another active reflection or block line; none of its fromIds has recorded evidence; or the block exceeds `promoteMaxTokens`. Content identical to its single source keeps that id (pure promotion).
+4. Plan and preview: removed (`-`), kept (`=`) and new (`+`) lines, the `.memory/` files to add (transitive closure over `replaces` and `supportingObservationIds`, from the branch ledger including retired and dropped records, else existing `.memory/` files; missing records are listed), ledger changes, and block tokens against the budget. It is shown with `ctx.ui.notify`, then `ctx.ui.confirm` asks with a one-line summary. Without a UI the preview is printed and nothing is written.
+5. Apply, under the lock, aborting without writes when the context file changed on disk or a source reflection is no longer active (the branch is re-folded): new `.memory/` files (`wx`, existing files untouched); the context file through a temp file and rename, only the text between the markers (or the block appended after a blank line); then `om.reflections.recorded` for rewritten lines, one `om.reflections.dropped` with `replacedBy` per rewrite for its sources in the ledger, and one `om.reflections.dropped` with kind `promoted` for every promoted id. `coversUpToId` is the latest observation coverage marker.
+6. Pi caches context files until `/reload`, and OM's `before_agent_start` snapshot would keep the stale copy, so the runtime keeps `{ path -> content }` of files it wrote and applies it on top of every project-context source. OM does not call `ctx.reload()`; the notice tells the user the main agent sees the block after `/reload` or in a new session.
+
+`.memory/<id>.md` frontmatter is a subset OM writes and parses itself: scalars and inline `[a, b]` id lists (`id`, `kind`, `session`, `replaces`, `supportingObservationIds`, `promotedAt` on promoted lines only; observations: `timestamp`, `relevance`, `session`, `sourceEntryIds`). The body is the record text verbatim; a reflection's body is followed by a blank line and an `<!-- om:links -->` block. Parsing normalises CRLF and removes only the line ending that separates the body from what follows; a body that no longer hashes to its id is still used, with a "text edited since promotion" note.
+
 ## Recall flow
 
 The agent-facing `recall` tool accepts a 12-character lowercase hex id.
@@ -352,6 +365,7 @@ The agent-facing `recall` tool accepts a 12-character lowercase hex id.
 6. Resolve observation source entries from `sourceEntryIds`.
 7. For reflections, mark retired ones `retired` (with the retirement kind when known, e.g. `retired (covered by project instructions)`) and `replaced by [id]` when known, list the retired reflections named by `replaces`, and resolve supporting observations (active or dropped) and their sources.
 8. Return exact evidence plus diagnostics for missing/non-source entries.
+9. When the id is not on the branch, look for `.memory/<id>.md` walking up from `ctx.cwd` (nearest wins), then in the promote target's store. Render it in the same layout, labelled `From project memory (<dir>/):`, following `replaces` and supporting observations through the store. Sources come from the branch when the record's `session` is the current one, else from `*_<session>.jsonl` under any directory next to `sessionManager.getSessionDir()` (the session id is validated before any path is built, and at most 64 MB of the file is read, keeping only the needed entries). A session not on this machine is noted instead.
 
 Recall ignores old V2 memory by construction because it indexes only V3 ledger entry types.
 
@@ -379,3 +393,4 @@ V3 does not use V2 state shapes. Old V2 custom memory entries, old V2 compaction
 - Kept observations and reflections are rendered without paraphrase.
 - Dropped observations and retired reflections remain recallable from ledger history.
 - Old V2 memory is ignored rather than migrated.
+- `/om:promote` touches a context file only between its markers, never rewrites or deletes `.memory/` files, and never runs git. Without a `.memory/` store and a promoted block, recall, status and worker inputs are unchanged.

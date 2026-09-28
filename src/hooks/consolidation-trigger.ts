@@ -37,9 +37,9 @@ import {
 	type V3MemoryCustomType,
 } from "../session-ledger/index.js";
 
-type ResolvedModel = Extract<ResolveResult, { ok: true }>;
+export type ResolvedModel = Extract<ResolveResult, { ok: true }>;
 
-type ConsolidationCtx = {
+export type ConsolidationCtx = {
 	cwd: string;
 	hasUI: boolean;
 	ui?: { notify: (message: string, type?: "warning" | "info" | "error") => void };
@@ -84,7 +84,7 @@ type ReflectorStageResult = {
 };
 
 /** Local "YYYY-MM-DD HH:MM", the same shape as observation timestamps. */
-function formatRecordedAt(timestamp: string | undefined): string | undefined {
+export function formatRecordedAt(timestamp: string | undefined): string | undefined {
 	if (!timestamp) return undefined;
 	const d = new Date(timestamp);
 	return Number.isNaN(d.getTime()) ? undefined : fmtLocal(d);
@@ -172,7 +172,7 @@ function workerHeadersFor(ctx: ConsolidationCtx, resolved: ResolvedModel): Resol
 }
 
 /** Thinking level for the worker call: the fallback's or reflector model's own setting wins when that model is active. */
-function workerThinkingLevel(runtime: Runtime, resolved: ResolvedModel) {
+export function workerThinkingLevel(runtime: Runtime, resolved: ResolvedModel) {
 	if (resolved.reflectorModelUsed === true) {
 		return runtime.config.reflectorModel?.thinking ?? runtime.config.model?.thinking ?? "low";
 	}
@@ -227,13 +227,13 @@ function projectContextFor(
 	return rendered.text;
 }
 
-type ModelResolver = {
+export type ModelResolver = {
 	resolve: (stage: ConsolidationPhase) => Promise<ResolvedModel | undefined>;
 	/** Resolve the configured fallback, caching it for the rest of the pass. */
 	resolveFallback: (stage: ConsolidationPhase) => Promise<ResolvedModel | undefined>;
 };
 
-function makeModelResolver(runtime: Runtime, ctx: ConsolidationCtx): ModelResolver {
+export function makeModelResolver(runtime: Runtime, ctx: ConsolidationCtx): ModelResolver {
 	let cached: ResolveResult | undefined;
 	// Once the fallback proves usable, keep it for the rest of the pass so later
 	// stages do not re-pay a known-broken primary.
@@ -317,7 +317,7 @@ function makeModelResolver(runtime: Runtime, ctx: ConsolidationCtx): ModelResolv
  * is final. The last error thrown is what the caller sees, so the existing
  * stream-error classification and failure recording stay intact.
  */
-async function runStageWithFallback<T>(
+export async function runStageWithFallback<T>(
 	ctx: ConsolidationCtx,
 	stage: ConsolidationPhase,
 	resolved: ResolvedModel,

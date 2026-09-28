@@ -74,6 +74,17 @@ consolidation lock. Every entry the pass writes is capped at `firstKeptEntryId` 
 then the hook full-folds the live branch. OM can only learn the cut inside `session_before_compact`, so the pass
 must stay in the hook.
 
+## /om:promote
+
+`src/commands/promote.ts` + `src/project-memory/` + `src/agents/promoter`. Writes only between the
+`om:promoted` markers of the context file at the repo root (main worktree root from a linked worktree, see
+`project-memory/target.ts`) and adds `.memory/<id>.md` files, never rewriting existing ones. Promoted
+reflections are retired with kind `promoted`, reversible like `project-instructions` and never offered to the
+reviewer. Pi caches context files until /reload, so `runtime.contextFileOverrides` applies OM's written
+content on top of every project-context source; do not call `ctx.reload()`. Recall falls back to the nearest
+`.memory/` only for ids not on the branch; with no store and no block, recall/status/worker inputs must stay
+byte-for-byte unchanged. Tests use temp dirs only.
+
 ## Maintaining this file
 
 Keep this file for knowledge useful to almost every future agent session in this project.

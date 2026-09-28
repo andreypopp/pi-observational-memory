@@ -46,6 +46,7 @@ describe("V3 config", () => {
 			agentMaxTurns: 16,
 			agentMaxTokens: 32000,
 			projectContext: true,
+			promoteMaxTokens: 1500,
 			showWorkerNotifications: true,
 			passive: false,
 			debugLog: false,
@@ -161,6 +162,7 @@ describe("V3 config", () => {
 				debugLog: "true",
 				projectContext: "false",
 				projectContextMaxTokens: 0,
+				promoteMaxTokens: -5,
 			},
 		});
 
@@ -173,6 +175,13 @@ describe("V3 config", () => {
 		});
 
 		expect(loadConfig(cwd, {})).toMatchObject({ projectContext: false, projectContextMaxTokens: 5000 });
+	});
+
+	it("defaults promoteMaxTokens to 1500 and accepts a positive integer", () => {
+		expect(DEFAULTS.promoteMaxTokens).toBe(1500);
+		writeJson(join(cwd, ".pi", "settings.json"), { "observational-memory": { promoteMaxTokens: 800 } });
+
+		expect(loadConfig(cwd, {}).promoteMaxTokens).toBe(800);
 	});
 
 	describe("resolveProjectContextMaxTokens", () => {

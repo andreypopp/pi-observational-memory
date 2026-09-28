@@ -85,6 +85,8 @@ export interface Config {
 	 * cap from the reflector model's context window; see {@link resolveProjectContextMaxTokens}.
 	 */
 	projectContextMaxTokens?: number;
+	/** Maximum estimated tokens of the managed block /om:promote writes into the project's AGENTS.md. */
+	promoteMaxTokens: number;
 	showWorkerNotifications: boolean;
 	passive: boolean;
 	debugLog: boolean;
@@ -101,6 +103,7 @@ export const DEFAULTS: Config = {
 	agentMaxTurns: 16,
 	agentMaxTokens: 32_000,
 	projectContext: true,
+	promoteMaxTokens: 1_500,
 	showWorkerNotifications: true,
 	passive: false,
 	debugLog: false,
@@ -253,6 +256,7 @@ function normalizeSettingsConfig(value: Record<string, unknown>): Partial<Config
 		"agentMaxTurns",
 		"agentMaxTokens",
 		"projectContextMaxTokens",
+		"promoteMaxTokens",
 	] as const;
 	for (const key of numberKeys) {
 		const normalizedValue = positiveIntegerOrUndefined(value[key]);

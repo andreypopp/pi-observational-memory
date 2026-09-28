@@ -295,6 +295,7 @@ on the `Next compaction` line regardless of mode.
 | `reflectorModel`            | unset         | Optional model for the reflector only: `{ provider, id, thinking }`. Falls back to the memory model when it cannot be resolved. |
 | `projectContext`            | `true`        | Shows the session's context files (AGENTS.md, CLAUDE.md, …) to both reflector calls, so reflections do not restate them and the review retires ones they cover. `false` leaves worker inputs unchanged. |
 | `projectContextMaxTokens`   | derived       | Max estimated tokens of project context per reflector call. Unset: `max(20000, floor(contextWindow * 0.1))` of the reflector model, or `20000` when unknown. Whole files; the global file is omitted first. |
+| `promoteMaxTokens`          | `1500`        | Max estimated tokens of the managed block `/om:promote` writes into the project's AGENTS.md. |
 | `showWorkerNotifications`   | `true`        | Shows routine observer, reflector, and dropper progress notifications. Warnings and errors are unaffected. |
 | `passive`                   | `false`       | Disables proactive background observation, reflection, maintenance, and auto-compaction triggers. |
 | `debugLog`                  | `false`       | Writes opt-in per-session extension debug events to Pi's agent directory.                         |
@@ -335,7 +336,10 @@ For details and tuning guidance, see [`docs/configuration.md`](docs/configuratio
 | `/om:view`          | Shows current visible memory and attempts to copy the rendered memory text to the clipboard.                                                   |
 | `/om:view full`     | Shows the full current memory state for the branch and attempts to copy the rendered memory text to the clipboard.                             |
 | `/om:reflect`       | Runs every memory worker now (observer, reflector with its review, dropper), ignoring their thresholds, then compacts with a full memory fold so the result is visible right away. Reports what changed and the summary size before and after. |
-| `recall` agent tool | Recovers source evidence for a 12-character observation/reflection id on the current branch. It is not semantic search or a transcript browser. |
+| `/om:promote`       | Asks the memory model which active reflections are durable project facts, previews a new managed block for the project's AGENTS.md plus the `.memory/` files it would add, and writes them after you confirm. Promoted reflections leave active memory. |
+| `recall` agent tool | Recovers source evidence for a 12-character observation/reflection id on the current branch, or from the project's `.memory/` store for ids in the promoted block. It is not semantic search or a transcript browser. |
+
+`/om:promote` writes only between `<!-- om:promoted:start -->` and `<!-- om:promoted:end -->` (appending the block when absent) in the context file Pi loads from the repository root (the main worktree's root from a linked worktree; `AGENTS.md` is created when none exists). Each line is `- [<id>] <fact>`; `.memory/<id>.md` holds that reflection plus everything it links to (replaced reflections, supporting observations), so `recall <id>` works in any session. Commit `.memory/` with the file; OM never runs git and never rewrites or deletes `.memory/` files. Without an interactive session it prints the preview and writes nothing. The main agent sees the new block after `/reload` or in a new session.
 
 `/om:view` copies only the rendered memory content. The success/failure line shown in Pi is not included in the clipboard text. If clipboard support is unavailable, the command still prints the memory view and shows a warning. Before the first V3 compaction, visible memory can be empty because nothing has been folded into `om.folded` details; use `/om:view full` to inspect recorded branch memory.
 
