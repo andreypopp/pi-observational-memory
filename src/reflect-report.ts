@@ -1,4 +1,4 @@
-import type { BlockRevision, StaleTextReport } from "./agents/reviewer/grounding.js";
+import type { PromotedLineRevision, StaleTextReport } from "./agents/reviewer/grounding.js";
 import type { ParsedPromotedMemory } from "./project-memory/memory-file.js";
 import type { PromoteTarget } from "./project-memory/target.js";
 import type { ConsolidationPhase } from "./runtime.js";
@@ -55,7 +55,7 @@ export type GroundingRequest = {
 	reviewed: boolean;
 	reflectionsRetiredStale: number;
 	reflectionsRewritten: number;
-	blockRevisions: BlockRevision[];
+	lineRevisions: PromotedLineRevision[];
 	staleText: StaleTextReport[];
 };
 
@@ -115,9 +115,9 @@ export function renderReflectReport(report: ReflectReport): string {
 }
 
 /** How /om:ground's block revisions ended: "no changes", "applied", "declined", "preview only" or "not applied: …". */
-export type GroundBlockOutcome = { rewritten: number; removed: number; status: string };
+export type GroundPromoteOutcome = { rewritten: number; removed: number; status: string };
 
-export function renderGroundReport(report: ReflectReport, grounding: GroundingRequest, block: GroundBlockOutcome): string {
+export function renderGroundReport(report: ReflectReport, grounding: GroundingRequest, promoted: GroundPromoteOutcome): string {
 	const lines = [renderReflectReport(report)];
 	if (!grounding.reviewed) {
 		lines.push("Grounding: the grounding review did not run; /om:status shows any memory worker error.");
@@ -125,9 +125,9 @@ export function renderGroundReport(report: ReflectReport, grounding: GroundingRe
 	}
 	lines.push(
 		`Grounding: ${grounding.toolCalls} tool call${grounding.toolCalls === 1 ? "" : "s"}; ${grounding.reflectionsRetiredStale} reflection${grounding.reflectionsRetiredStale === 1 ? "" : "s"} retired as stale, ${grounding.reflectionsRewritten} rewritten`,
-		block.rewritten + block.removed > 0
-			? `Promoted lines: ${block.rewritten} rewritten, ${block.removed} removed (${block.status})`
-			: `Promoted lines: ${block.status}`,
+		promoted.rewritten + promoted.removed > 0
+			? `Promoted lines: ${promoted.rewritten} rewritten, ${promoted.removed} removed (${promoted.status})`
+			: `Promoted lines: ${promoted.status}`,
 	);
 	if (grounding.staleText.length === 0) lines.push("Stale hand-written text: none found");
 	else {

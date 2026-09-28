@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { blockTokens, renderPromotedMemory } from "../src/project-memory/memory-file.js";
+import { promotedLineTokens, renderPromotedMemory } from "../src/project-memory/memory-file.js";
 import { describe, expect, it, vi } from "vitest";
 
 import { registerStatusCommand } from "../src/commands/status.js";
@@ -86,7 +86,7 @@ describe("V3 /om:status", () => {
 			const lines = ["- [aaaaaaaaaaaa] Fact A", "- [bbbbbbbbbbbb] Fact B"];
 			writeFileSync(join(dir, ".memory.md"), renderPromotedMemory(lines));
 			const output = await setup({ entries: [], cwd: join(dir, "sub") }).run();
-			expect(output).toContain(`Promoted: 2 lines (~${blockTokens(lines)} tokens) in ../.memory.md`);
+			expect(output).toContain(`Promoted: 2 lines (~${promotedLineTokens(lines)} tokens) in ../.memory.md`);
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}

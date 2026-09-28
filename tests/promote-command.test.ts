@@ -19,7 +19,7 @@ vi.mock("../src/agents/promoter/agent.js", async (importOriginal) => {
 import { registerPromoteCommand } from "../src/commands/promote.js";
 import { resolveProjectContextFiles } from "../src/hooks/project-context.js";
 import { hashId } from "../src/ids.js";
-import { renderBlockLine, renderPromotedMemory } from "../src/project-memory/memory-file.js";
+import { renderPromotedLine, renderPromotedMemory } from "../src/project-memory/memory-file.js";
 import { parseMemoryFile } from "../src/project-memory/store.js";
 import { Runtime } from "../src/runtime.js";
 import { foldLedger } from "../src/session-ledger/index.js";
@@ -136,7 +136,7 @@ describe("/om:promote", () => {
 
 			const output = log.mock.calls.map((call) => String(call[0])).join("\n");
 			expect(output).toContain("/om:promote preview");
-			expect(output).toContain(`+ ${renderBlockLine(A.id, "Fact A")}`);
+			expect(output).toContain(`+ ${renderPromotedLine(A.id, "Fact A")}`);
 			expect(output).toContain("needs an interactive session");
 			expect(existsSync(memoryPath())).toBe(false);
 			agentsUntouched();
@@ -155,7 +155,7 @@ describe("/om:promote", () => {
 		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("/om:promote preview"), "info");
 		expect(ctx.ui.confirm).toHaveBeenCalledWith("Promote memory?", expect.stringContaining(".memory.md: +2 / =0 / -0 lines"));
 		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Target: .memory.md (new file)"), "info");
-		const expectedLines = [renderBlockLine(A.id, "Fact A"), renderBlockLine(mergedId, MERGED)];
+		const expectedLines = [renderPromotedLine(A.id, "Fact A"), renderPromotedLine(mergedId, MERGED)];
 		expect(readFileSync(memoryPath(), "utf8")).toBe(renderPromotedMemory(expectedLines));
 		agentsUntouched();
 
@@ -268,12 +268,12 @@ describe("/om:promote", () => {
 		await run();
 
 		const promoterArgs = mocks.runPromoter.mock.calls[0][0];
-		expect(promoterArgs.blockLines.map((line: any) => line.content)).toEqual(["Written without an id"]);
+		expect(promoterArgs.promotedLines.map((line: any) => line.content)).toEqual(["Written without an id"]);
 		expect(promoterArgs.projectContext).toContain("rules");
 		expect(promoterArgs.projectContext).not.toContain("Written without an id");
 		const preview = String(ctx.ui.notify.mock.calls.find((call: unknown[]) => String(call[0]).includes("preview"))![0]);
 		expect(preview).toContain("Other text in the file, not kept (only `- ` lines are):\n  A note by hand.");
-		expect(readFileSync(memoryPath(), "utf8")).toBe(renderPromotedMemory(["- Written without an id", renderBlockLine(A.id, "Fact A")]));
+		expect(readFileSync(memoryPath(), "utf8")).toBe(renderPromotedMemory(["- Written without an id", renderPromotedLine(A.id, "Fact A")]));
 	});
 
 	it("keeps and removes existing block lines, reading records only in .memory for rewrites", async () => {
@@ -285,7 +285,7 @@ describe("/om:promote", () => {
 		await later.run();
 
 		const reworded = hashId("Fact A, reworded");
-		expect(readFileSync(memoryPath(), "utf8")).toBe(renderPromotedMemory([renderBlockLine(reworded, "Fact A, reworded")]));
+		expect(readFileSync(memoryPath(), "utf8")).toBe(renderPromotedMemory([renderPromotedLine(reworded, "Fact A, reworded")]));
 		expect(parseMemoryFile(readFileSync(join(root, ".memory", `${reworded}.md`), "utf8"))).toMatchObject({ replaces: [A.id], supportingObservationIds: ["aaaaaaaaaaaa"] });
 		expect(later.ctx.ui.confirm).toHaveBeenCalledWith("Promote memory?", expect.stringContaining("+1 / =0 / -2 lines"));
 		// The rewrite replaces A, so A and its evidence stay; the dropped merged line's chain goes.
@@ -310,7 +310,7 @@ describe("/om:promote", () => {
 		await run();
 
 		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining(`linked git worktree (${linked}); .memory.md and .memory/ go to the main worktree at ${root}`), "info");
-		expect(readFileSync(memoryPath(), "utf8")).toContain(renderBlockLine(A.id, "Fact A"));
+		expect(readFileSync(memoryPath(), "utf8")).toContain(renderPromotedLine(A.id, "Fact A"));
 		agentsUntouched();
 		expect(readdirSync(linked)).toEqual([".git"]);
 	});

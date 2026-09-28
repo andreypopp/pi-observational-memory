@@ -1,6 +1,6 @@
 import { existsSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import type { PromoteSourceRecord, ProposedBlockLine } from "../agents/promoter/agent.js";
+import type { PromoteSourceRecord, ProposedPromotedLine } from "../agents/promoter/agent.js";
 import {
 	buildReflectionsDroppedData,
 	buildReflectionsRecordedData,
@@ -15,7 +15,7 @@ import {
 	type ReflectionsRecordedEntryData,
 } from "../session-ledger/index.js";
 import { estimateStringTokens } from "../tokens.js";
-import { blockTokens, parsePromotedMemory, readPromotedMemory, renderPromotedMemory, type BlockLine } from "./memory-file.js";
+import { promotedLineTokens, parsePromotedMemory, readPromotedMemory, renderPromotedMemory, type PromotedLine } from "./memory-file.js";
 import { memoryClosure, reflectionToMemoryRecord } from "./closure.js";
 import { listMemoryFileIds, readMemoryRecord, removeMemoryFiles, writeNewMemoryFiles, type MemoryRecord } from "./store.js";
 import { displayPath, type PromoteTarget } from "./target.js";
@@ -24,10 +24,10 @@ export type PromotePlan = {
 	target: PromoteTarget;
 	/** `.memory.md` as read before the model call; undefined when it did not exist. */
 	originalContent: string | undefined;
-	currentLines: BlockLine[];
+	currentLines: PromotedLine[];
 	/** Text in `.memory.md` that is not a promoted line, dropped on write. */
 	droppedText: string[];
-	proposedLines: ProposedBlockLine[];
+	proposedLines: ProposedPromotedLine[];
 	currentTokens: number;
 	tokens: number;
 	/** The new `.memory.md`; undefined when no lines remain, which deletes the file. */
@@ -51,7 +51,7 @@ export type PromotePlan = {
 };
 
 /** Reflection records behind the block's id lines: the branch ledger first, then `.memory/`. */
-export function blockLineRecords(lines: readonly BlockLine[], folded: FoldedLedger, memoryDir: string): Map<string, PromoteSourceRecord> {
+export function promotedLineRecords(lines: readonly PromotedLine[], folded: FoldedLedger, memoryDir: string): Map<string, PromoteSourceRecord> {
 	const records = new Map<string, PromoteSourceRecord>();
 	for (const line of lines) {
 		if (!line.hasId) continue;
@@ -67,7 +67,7 @@ export function blockLineRecords(lines: readonly BlockLine[], folded: FoldedLedg
 export function buildPromotePlan(args: {
 	target: PromoteTarget;
 	originalContent: string | undefined;
-	proposedLines: ProposedBlockLine[];
+	proposedLines: ProposedPromotedLine[];
 	folded: FoldedLedger;
 	sessionId: string | undefined;
 	promotedAt: string;
@@ -123,8 +123,8 @@ export function buildPromotePlan(args: {
 		currentLines,
 		droppedText: parsed.dropped,
 		proposedLines,
-		currentTokens: blockTokens(currentLines.map((line) => line.raw.trim())),
-		tokens: blockTokens(lineTexts),
+		currentTokens: promotedLineTokens(currentLines.map((line) => line.raw.trim())),
+		tokens: promotedLineTokens(lineTexts),
 		newContent: lineTexts.length > 0 ? renderPromotedMemory(lineTexts) : undefined,
 		memoryRecords: closure.records,
 		existingMemoryIds: closure.existingIds,

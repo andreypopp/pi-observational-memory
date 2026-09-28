@@ -7,7 +7,7 @@ import { runReflectionReview } from "../src/agents/reviewer/agent.js";
 import { GROUNDING_SYSTEM, REVIEW_SYSTEM } from "../src/agents/reviewer/prompts.js";
 import { createRepoTools, groundingBashTimeout } from "../src/agents/reviewer/repo-tools.js";
 import { hashId } from "../src/ids.js";
-import { parsePromotedMemory, renderBlockLine, renderPromotedMemory } from "../src/project-memory/memory-file.js";
+import { parsePromotedMemory, renderPromotedLine, renderPromotedMemory } from "../src/project-memory/memory-file.js";
 import { observation, reflection } from "./fixtures/session.js";
 
 function fakeAgentLoop(handler: (prompts: any[], context: any, config: any) => Promise<void> | void): any {
@@ -27,7 +27,7 @@ const LINE_Q = { id: "bbbbbbbbbbb2", content: "Lint with eslint" };
 const HAND = "Hand-written block line";
 
 function blockLines() {
-	return parsePromotedMemory(renderPromotedMemory([renderBlockLine(LINE_P.id, LINE_P.content), renderBlockLine(LINE_Q.id, LINE_Q.content), `- ${HAND}`])).lines;
+	return parsePromotedMemory(renderPromotedMemory([renderPromotedLine(LINE_P.id, LINE_P.content), renderPromotedLine(LINE_Q.id, LINE_Q.content), `- ${HAND}`])).lines;
 }
 
 function repoTool(name: string, execute = vi.fn(async () => ({ content: [{ type: "text", text: `${name} output` }], details: {} }))) {
@@ -52,9 +52,9 @@ function grounding(overrides: Record<string, unknown> = {}) {
 		tools: [repoTool("read"), repoTool("bash")],
 		root: "/repo",
 		memoryPath: "/repo/.memory.md",
-		blockLines: blockLines(),
-		blockRecords: new Map([[LINE_P.id, { id: LINE_P.id, content: LINE_P.content, supportingObservationIds: ["eeeeeeeeeeee"] }]]),
-		maxBlockTokens: 1500,
+		promotedLines: blockLines(),
+		lineRecords: new Map([[LINE_P.id, { id: LINE_P.id, content: LINE_P.content, supportingObservationIds: ["eeeeeeeeeeee"] }]]),
+		maxPromotedTokens: 1500,
 		...overrides,
 	};
 }
@@ -100,7 +100,7 @@ describe("grounding review", () => {
 		const { result, seen } = await review([], { reflections: [], grounding: grounding() });
 
 		expect(seen.context).toBeDefined();
-		expect(result).toEqual({ replacements: [], retirements: [], grounding: { toolCalls: 0, blockRevisions: [], staleText: [] } });
+		expect(result).toEqual({ replacements: [], retirements: [], grounding: { toolCalls: 0, lineRevisions: [], staleText: [] } });
 	});
 
 	it("counts repo tool calls and reports each running total", async () => {
@@ -160,7 +160,7 @@ describe("grounding review", () => {
 			expect(replies[0]).toBe("Recorded 2 line decisions and 1 report.");
 			expect(result?.grounding).toEqual({
 				toolCalls: 0,
-				blockRevisions: [
+				lineRevisions: [
 					{ id: LINE_P.id, action: "rewrite", content: "Build with just", reason: "justfile:1" },
 					{ id: hashId(HAND), action: "remove", reason: "no such file" },
 				],
@@ -189,16 +189,16 @@ describe("grounding review", () => {
 			expect(replies[5]).toContain("matches the line itself or a retired reflection");
 			expect(replies[6]).toBe("Recorded 1 line decision and 0 reports.");
 			expect(replies[7]).toContain(`${LINE_P.id} was already decided`);
-			expect(result?.grounding?.blockRevisions).toEqual([{ id: LINE_P.id, action: "remove", reason: "gone" }]);
+			expect(result?.grounding?.lineRevisions).toEqual([{ id: LINE_P.id, action: "remove", reason: "gone" }]);
 		});
 
 		it("rejects rewrites that push the block over its budget", async () => {
 			const { result, replies } = await review([
 				["revise_promoted_block", { revise: [{ id: LINE_P.id, action: "rewrite", content: `Build with make ${"x".repeat(400)}`, reason: "Makefile" }] }],
-			], { grounding: grounding({ maxBlockTokens: 80 }) });
+			], { grounding: grounding({ maxPromotedTokens: 80 }) });
 
 			expect(replies[0]).toContain("over the budget of 80");
-			expect(result?.grounding?.blockRevisions).toEqual([]);
+			expect(result?.grounding?.lineRevisions).toEqual([]);
 		});
 	});
 });

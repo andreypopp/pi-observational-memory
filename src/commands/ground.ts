@@ -4,23 +4,22 @@ import { debugLog } from "../debug-log.js";
 import { runReflectPass } from "../hooks/compaction-hook.js";
 import { refreshProjectContextFromCommand } from "../hooks/project-context.js";
 import { parsePromotedMemory, readPromotedMemory } from "../project-memory/memory-file.js";
-import { buildGroundBlockPlan } from "../project-memory/ground.js";
-import { applyPromotePlan, promoteSummary, renderPromotePreview } from "../project-memory/promote.js";
+import { buildGroundPromotePlan } from "../project-memory/ground.js";
 import { displayPath, resolvePromoteTarget } from "../project-memory/target.js";
 import {
 	emptyReflectReport,
 	renderGroundReport,
-	type GroundBlockOutcome,
+	type GroundPromoteOutcome,
 	type GroundingRequest,
 	type PassProgressDetail,
 	type PassStage,
 	type ReflectRequest,
 } from "../reflect-report.js";
-import { compactionBusy, isBusy, type Runtime } from "../runtime.js";
+import { isBusy, type Runtime } from "../runtime.js";
 import { foldLedger, type Entry } from "../session-ledger/index.js";
 import { commandNotify, type Notify } from "./notify.js";
 import { isNothingToCompact } from "./reflect.js";
-import { withConsolidationLock } from "./promote.js";
+import { confirmAndApplyPlan } from "./promote.js";
 import { statusWidget, type StatusWidget } from "./status-widget.js";
 
 export const GROUND_STATUS_WIDGET = "om-ground";
@@ -51,7 +50,7 @@ type GroundProgress = {
  */
 function groundProgress(status: StatusWidget, grounding: GroundingRequest): GroundProgress {
 	const startedAt = Date.now();
-	const blockName = basename(grounding.target.memoryPath);
+	const memoryFileName = basename(grounding.target.memoryPath);
 	let spinner = false;
 	let text: (() => string) | undefined;
 	let timer: ReturnType<typeof setInterval> | undefined;
@@ -64,7 +63,7 @@ function groundProgress(status: StatusWidget, grounding: GroundingRequest): Grou
 			if (stage === "review") {
 				const reflections = detail?.reflections ?? 0;
 				const lines = grounding.parsed.lines.length;
-				text = () => `checking ${reflections} reflection${reflections === 1 ? "" : "s"} and ${lines} ${blockName} line${lines === 1 ? "" : "s"} against the repo… ${grounding.toolCalls} tool call${grounding.toolCalls === 1 ? "" : "s"},`;
+				text = () => `checking ${reflections} reflection${reflections === 1 ? "" : "s"} and ${lines} ${memoryFileName} line${lines === 1 ? "" : "s"} against the repo… ${grounding.toolCalls} tool call${grounding.toolCalls === 1 ? "" : "s"},`;
 			} else {
 				text = () => STAGE_LABELS[stage];
 			}
@@ -91,54 +90,50 @@ function groundProgress(status: StatusWidget, grounding: GroundingRequest): Grou
  * After the pass: turn the block revisions into a plan against the live branch and the file as it is
  * now, preview it, and apply it on confirmation, like /om:promote. Without UI it only prints the preview.
  */
-async function applyBlockRevisions(
+async function applyLineRevisions(
 	pi: ExtensionAPI,
 	runtime: Runtime,
 	ctx: ExtensionCommandContext,
 	grounding: GroundingRequest,
 	notify: Notify,
 	status: StatusWidget,
-): Promise<GroundBlockOutcome> {
-	if (grounding.blockRevisions.length === 0) return { rewritten: 0, removed: 0, status: "no changes" };
+): Promise<GroundPromoteOutcome> {
+	if (grounding.lineRevisions.length === 0) return { rewritten: 0, removed: 0, status: "no changes" };
 	runtime.promoteInFlight = true;
 	try {
 		const entries = ctx.sessionManager.getBranch() as Entry[];
-		const built = buildGroundBlockPlan({
+		const built = buildGroundPromotePlan({
 			target: grounding.target,
 			reviewedLines: grounding.parsed.lines,
-			revisions: grounding.blockRevisions,
+			revisions: grounding.lineRevisions,
 			folded: foldLedger(entries),
 			sessionId: ctx.sessionManager.getSessionId?.(),
 			promotedAt: new Date().toISOString(),
 			cwd: ctx.cwd,
 		});
-		const counts = { rewritten: grounding.blockRevisions.filter((r) => r.action === "rewrite").length, removed: grounding.blockRevisions.filter((r) => r.action === "remove").length };
+		const counts = { rewritten: grounding.lineRevisions.filter((r) => r.action === "rewrite").length, removed: grounding.lineRevisions.filter((r) => r.action === "remove").length };
 		if (!built.ok) return { ...counts, status: `not applied: ${built.reason}` };
 		const { plan } = built;
-		const outcome = (status: string): GroundBlockOutcome => ({ rewritten: built.rewritten, removed: built.removed, status });
-		const reasons = grounding.blockRevisions.map((revision) => `- [${revision.id}] ${revision.action}: ${revision.reason}`);
+		const outcome = (status: string): GroundPromoteOutcome => ({ rewritten: built.rewritten, removed: built.removed, status });
+		const reasons = grounding.lineRevisions.map((revision) => `- [${revision.id}] ${revision.action}: ${revision.reason}`);
 		const staleText = grounding.staleText.map((item) => `- ${item.path}: "${item.excerpt}" — ${item.reason}`);
-		const preview = [
-			renderPromotePreview(plan, ctx.cwd, runtime.config.promoteMaxTokens, "Observational memory: /om:ground block preview"),
-			"",
-			"Evidence:",
-			...reasons,
-			...(staleText.length > 0 ? ["", "Stale hand-written text (reported only, not edited):", ...staleText] : []),
-		].join("\n");
-		if (!ctx.hasUI || !ctx.ui) {
-			console.log(`${preview}\n\n/om:ground needs an interactive session to apply block changes; nothing was written.`);
-			return outcome("preview only");
-		}
-		ctx.ui.notify(preview, "info");
-		if (!(await ctx.ui.confirm("Apply grounding to the promoted block?", promoteSummary(plan, ctx.cwd)))) return outcome("declined");
-		if (compactionBusy(runtime)) {
-			return outcome("not applied: a compaction started meanwhile");
-		}
-		status.show(`Grounding: writing ${basename(plan.target.memoryPath)} and .memory/…`);
-		const result = await withConsolidationLock(runtime, notify, async () => {
-			const live = ctx.sessionManager.getBranch() as Entry[];
-			return applyPromotePlan(plan, live, foldLedger(live), (customType, data) => pi.appendEntry(customType, data), ctx.cwd);
-		}, "grounding the block");
+		const applied = await confirmAndApplyPlan(pi, runtime, ctx, notify, status, plan, {
+			ui: ctx.hasUI ? ctx.ui : undefined,
+			previewTitle: "Observational memory: /om:ground block preview",
+			previewDetails: [
+				"",
+				"Evidence:",
+				...reasons,
+				...(staleText.length > 0 ? ["", "Stale hand-written text (reported only, not edited):", ...staleText] : []),
+			],
+			noUiNote: "/om:ground needs an interactive session to apply block changes; nothing was written.",
+			confirmTitle: "Apply grounding to the promoted block?",
+			statusLabel: "Grounding",
+			doing: "grounding the block",
+		});
+		if (applied.status === "busy") return outcome("not applied: a compaction started meanwhile");
+		if (applied.status !== "applied") return outcome(applied.status);
+		const { result } = applied;
 		if (!result.ok) return outcome(`not applied: ${result.reason}`);
 		debugLog("ground.block_applied", { rewritten: built.rewritten, removed: built.removed, memoryFilesWritten: result.memoryFilesWritten.length, memoryFilesRemoved: result.memoryFilesRemoved.length });
 		return outcome(`applied to ${displayPath(plan.target.memoryPath, ctx.cwd)}`);
@@ -181,7 +176,7 @@ export function registerGroundCommand(pi: ExtensionAPI, runtime: Runtime): void 
 				reviewed: false,
 				reflectionsRetiredStale: 0,
 				reflectionsRewritten: 0,
-				blockRevisions: [],
+				lineRevisions: [],
 				staleText: [],
 			};
 			const status = statusWidget(ctx, GROUND_STATUS_WIDGET);
@@ -195,8 +190,8 @@ export function registerGroundCommand(pi: ExtensionAPI, runtime: Runtime): void 
 			};
 			const complete = async () => {
 				try {
-					const block = await applyBlockRevisions(pi, runtime, ctx, grounding, notify, status);
-					notify(renderGroundReport(request.report, grounding, block), "info");
+					const promoted = await applyLineRevisions(pi, runtime, ctx, grounding, notify, status);
+					notify(renderGroundReport(request.report, grounding, promoted), "info");
 				} catch (error) {
 					const message = error instanceof Error ? error.message : String(error);
 					debugLog("ground.error", { errorMessage: message });

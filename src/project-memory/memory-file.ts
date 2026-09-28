@@ -8,7 +8,7 @@ const INTRO = "Durable facts promoted from observational memory. `recall <id>` s
 
 const ID_LINE = /^- \[([a-f0-9]{12})\] (.+)$/;
 
-export type BlockLine = {
+export type PromotedLine = {
 	/** The line's memory id, or a content hash for a hand-written line without one. */
 	id: string;
 	content: string;
@@ -19,7 +19,7 @@ export type BlockLine = {
 };
 
 export type ParsedPromotedMemory = {
-	lines: BlockLine[];
+	lines: PromotedLine[];
 	/** Other text besides the header: not kept when OM rewrites the file. */
 	dropped: string[];
 };
@@ -29,7 +29,7 @@ export type ParsedPromotedMemory = {
  * `.memory/`), the fixed header is skipped, and any other text is reported as dropped.
  */
 export function parsePromotedMemory(content: string): ParsedPromotedMemory {
-	const lines: BlockLine[] = [];
+	const lines: PromotedLine[] = [];
 	const dropped: string[] = [];
 	for (const raw of content.replace(/^\uFEFF/, "").split(/\r?\n/).map((line) => line.replace(/\s+$/, ""))) {
 		const text = raw.trim();
@@ -51,7 +51,7 @@ export function readPromotedMemory(path: string): string | undefined {
 	return existsSync(path) ? readFileSync(path, "utf8") : undefined;
 }
 
-export function renderBlockLine(id: string, content: string): string {
+export function renderPromotedLine(id: string, content: string): string {
 	return `- [${id}] ${content}`;
 }
 
@@ -60,6 +60,6 @@ export function renderPromotedMemory(lines: readonly string[]): string {
 	return `${[TITLE, "", INTRO, "", ...lines].join("\n")}\n`;
 }
 
-export function blockTokens(lines: readonly string[]): number {
+export function promotedLineTokens(lines: readonly string[]): number {
 	return estimateStringTokens(renderPromotedMemory(lines));
 }

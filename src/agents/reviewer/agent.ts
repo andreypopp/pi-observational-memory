@@ -93,7 +93,7 @@ function unionSupportingIds(reflections: readonly Reflection[]): string[] {
 
 export async function runReflectionReview(args: RunReflectionReviewArgs): Promise<ReflectionReviewResult | undefined> {
 	const { model, apiKey, headers, env, reflections, newReflectionIds, retiredReflectionIds, recordedAt, observations, signal, grounding } = args;
-	if (reflections.length === 0 && !(grounding && grounding.blockLines.length > 0)) return undefined;
+	if (reflections.length === 0 && !(grounding && grounding.promotedLines.length > 0)) return undefined;
 
 	const activeById = new Map(reflections.map((reflection) => [reflection.id, reflection]));
 	// A grounding review may also retire a [new] reflection the repository contradicts, and keeps the model's reasons.
@@ -203,17 +203,17 @@ export async function runReflectionReview(args: RunReflectionReviewArgs): Promis
 	let toolCalls = 0;
 	const reviseBlock = grounding
 		? createReviseBlockTool({
-			blockLines: grounding.blockLines,
-			blockRecords: grounding.blockRecords,
+			promotedLines: grounding.promotedLines,
+			lineRecords: grounding.lineRecords,
 			activeReflectionIds: new Set(activeById.keys()),
 			retiredReflectionIds,
-			maxBlockTokens: grounding.maxBlockTokens,
+			maxPromotedTokens: grounding.maxPromotedTokens,
 		})
 		: undefined;
 	const userText = grounding
 		? withProjectContext(
 			args.projectContext,
-			`${reflectionsText}\n\n${basename(grounding.memoryPath)} PROMOTED LINES (${grounding.memoryPath}):\n${joinOrEmpty(grounding.blockLines.map((line) => `[${line.id}] ${line.content}`))}\n\n${observationsText}\n\nREPOSITORY: ${grounding.root}\n\nCheck the reflections and promoted lines against the repository, then record decisions. If nothing needs to change, do not call tidy_reflections or revise_promoted_block.`,
+			`${reflectionsText}\n\n${basename(grounding.memoryPath)} PROMOTED LINES (${grounding.memoryPath}):\n${joinOrEmpty(grounding.promotedLines.map((line) => `[${line.id}] ${line.content}`))}\n\n${observationsText}\n\nREPOSITORY: ${grounding.root}\n\nCheck the reflections and promoted lines against the repository, then record decisions. If nothing needs to change, do not call tidy_reflections or revise_promoted_block.`,
 		)
 		: withProjectContext(args.projectContext, `${reflectionsText}\n\n${observationsText}\n\nReview the reflections. If none needs to change, do not call the tool.`);
 	const { system, prompts } = workerMessages(model, grounding ? `${REVIEW_SYSTEM}\n\n${GROUNDING_SYSTEM}` : REVIEW_SYSTEM, userText);

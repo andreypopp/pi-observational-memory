@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { runPromoter, validatePromotedBlock } from "../src/agents/promoter/agent.js";
 import { hashId } from "../src/ids.js";
-import { blockTokens, renderBlockLine, type BlockLine } from "../src/project-memory/memory-file.js";
+import { promotedLineTokens, renderPromotedLine, type PromotedLine } from "../src/project-memory/memory-file.js";
 import { reflection } from "./fixtures/session.js";
 
 function fakeAgentLoop(handler: (prompts: any[], context: any) => Promise<void> | void, events: any[] = []): any {
@@ -20,18 +20,18 @@ function fakeAgentLoop(handler: (prompts: any[], context: any) => Promise<void> 
 const REF_A = reflection(hashId("Fact A"), ["aaaaaaaaaaaa"], { content: "Fact A" });
 const REF_B = reflection(hashId("Fact B"), ["bbbbbbbbbbbb"], { content: "Fact B" });
 const BLOCK_ID = "cccccccccccc";
-const BLOCK: BlockLine[] = [
-	{ id: BLOCK_ID, content: "Old block fact", raw: renderBlockLine(BLOCK_ID, "Old block fact"), hasId: true },
+const BLOCK: PromotedLine[] = [
+	{ id: BLOCK_ID, content: "Old block fact", raw: renderPromotedLine(BLOCK_ID, "Old block fact"), hasId: true },
 	{ id: hashId("Hand line"), content: "Hand line", raw: "- Hand line", hasId: false },
 ];
 
 function args(overrides: Record<string, unknown> = {}) {
 	return {
-		blockLines: BLOCK,
-		blockRecords: new Map([[BLOCK_ID, { id: BLOCK_ID, content: "Old block fact", supportingObservationIds: ["dddddddddddd"] }]]),
+		promotedLines: BLOCK,
+		lineRecords: new Map([[BLOCK_ID, { id: BLOCK_ID, content: "Old block fact", supportingObservationIds: ["dddddddddddd"] }]]),
 		activeReflections: [REF_A, REF_B],
 		retiredReflectionIds: new Set<string>(["eeeeeeeeeeee"]),
-		maxBlockTokens: 1500,
+		maxPromotedTokens: 1500,
 		...overrides,
 	};
 }
@@ -50,24 +50,24 @@ describe("set_promoted_block validation", () => {
 		expect(result).toEqual({
 			lines: [
 				{ kind: "keep", id: hashId("Hand line"), line: "- Hand line" },
-				{ kind: "promote", id: REF_B.id, line: renderBlockLine(REF_B.id, "Fact B"), reflection: REF_B },
+				{ kind: "promote", id: REF_B.id, line: renderPromotedLine(REF_B.id, "Fact B"), reflection: REF_B },
 				{
 					kind: "rewrite",
 					id: hashId(merged),
-					line: renderBlockLine(hashId(merged), merged),
+					line: renderPromotedLine(hashId(merged), merged),
 					content: merged,
 					fromIds: [REF_A.id, BLOCK_ID],
 					replaces: [REF_A.id, BLOCK_ID],
 					supportingObservationIds: ["aaaaaaaaaaaa", "dddddddddddd"],
 				},
 			],
-			tokens: blockTokens(["- Hand line", renderBlockLine(REF_B.id, "Fact B"), renderBlockLine(hashId(merged), merged)]),
+			tokens: promotedLineTokens(["- Hand line", renderPromotedLine(REF_B.id, "Fact B"), renderPromotedLine(hashId(merged), merged)]),
 		});
 	});
 
 	it("treats an unchanged block line given as content as kept", () => {
 		const result = validatePromotedBlock({ lines: [{ content: "Old block fact", fromIds: [BLOCK_ID] }] }, args());
-		expect(result).toMatchObject({ lines: [{ kind: "keep", id: BLOCK_ID, line: renderBlockLine(BLOCK_ID, "Old block fact") }] });
+		expect(result).toMatchObject({ lines: [{ kind: "keep", id: BLOCK_ID, line: renderPromotedLine(BLOCK_ID, "Old block fact") }] });
 	});
 
 	it.each([
@@ -94,7 +94,7 @@ describe("set_promoted_block validation", () => {
 	});
 
 	it("rejects a block over the budget", () => {
-		const result = validatePromotedBlock({ lines: [{ content: "Fact A", fromIds: [REF_A.id] }] }, args({ maxBlockTokens: 10 }));
+		const result = validatePromotedBlock({ lines: [{ content: "Fact A", fromIds: [REF_A.id] }] }, args({ maxPromotedTokens: 10 }));
 		expect("problems" in result && result.problems[0]).toContain("over the budget of 10");
 	});
 });

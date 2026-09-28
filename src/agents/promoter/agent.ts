@@ -5,7 +5,7 @@ import type { Static } from "typebox";
 import { debugLog } from "../../debug-log.js";
 import { hashId } from "../../ids.js";
 import { AGENT_LOOP_MAX_TOKENS, boundedMaxTokens } from "../../model-budget.js";
-import { blockTokens, renderBlockLine, type BlockLine } from "../../project-memory/memory-file.js";
+import { promotedLineTokens, renderPromotedLine, type PromotedLine } from "../../project-memory/memory-file.js";
 import type { Reflection } from "../../session-ledger/index.js";
 import { withProjectContext } from "../project-context.js";
 import { reflectionToReviewLine } from "../reviewer/agent.js";
@@ -24,9 +24,9 @@ interface RunPromoterArgs {
 	headers?: Record<string, string>;
 	env?: Record<string, string>;
 	/** Current lines of `.memory.md`. */
-	blockLines: BlockLine[];
+	promotedLines: PromotedLine[];
 	/** Reflection records behind block line ids (branch ledger or `.memory/`), when known. */
-	blockRecords: ReadonlyMap<string, PromoteSourceRecord>;
+	lineRecords: ReadonlyMap<string, PromoteSourceRecord>;
 	activeReflections: Reflection[];
 	/** Display record time ("YYYY-MM-DD HH:MM") per reflection id. */
 	recordedAt: ReadonlyMap<string, string>;
@@ -34,7 +34,7 @@ interface RunPromoterArgs {
 	retiredReflectionIds: ReadonlySet<string>;
 	/** Rendered PROJECT INSTRUCTIONS block without `.memory.md`; "" or absent leaves it out. */
 	projectContext?: string;
-	maxBlockTokens: number;
+	maxPromotedTokens: number;
 	signal?: AbortSignal;
 	agentLoop?: typeof agentLoop;
 	maxTurns?: number;
@@ -44,7 +44,7 @@ interface RunPromoterArgs {
 	streamSimple?: WorkerStreamSimple;
 }
 
-export type ProposedBlockLine =
+export type ProposedPromotedLine =
 	| { kind: "keep"; id: string; line: string }
 	/** An active reflection promoted unchanged: the line keeps the reflection's id. */
 	| { kind: "promote"; id: string; line: string; reflection: Reflection }
@@ -60,7 +60,7 @@ export type ProposedBlockLine =
 			supportingObservationIds: string[];
 	  };
 
-export type PromoterResult = { lines: ProposedBlockLine[]; tokens: number };
+export type PromoterResult = { lines: ProposedPromotedLine[]; tokens: number };
 
 const LineSchema = Type.Object({
 	keepId: Type.Optional(Type.String({ description: "Id of an existing block line to keep unchanged." })),
@@ -77,14 +77,14 @@ type SetPromotedBlockArgs = Static<typeof SetPromotedBlockSchema>;
 /** Validate one proposed block; returns the lines or the problems found. */
 export function validatePromotedBlock(
 	params: SetPromotedBlockArgs,
-	args: Pick<RunPromoterArgs, "blockLines" | "blockRecords" | "activeReflections" | "retiredReflectionIds" | "maxBlockTokens">,
-): { lines: ProposedBlockLine[]; tokens: number } | { problems: string[] } {
-	const blockById = new Map(args.blockLines.map((line) => [line.id, line]));
+	args: Pick<RunPromoterArgs, "promotedLines" | "lineRecords" | "activeReflections" | "retiredReflectionIds" | "maxPromotedTokens">,
+): { lines: ProposedPromotedLine[]; tokens: number } | { problems: string[] } {
+	const lineById = new Map(args.promotedLines.map((line) => [line.id, line]));
 	const activeById = new Map(args.activeReflections.map((reflection) => [reflection.id, reflection]));
 	const problems: string[] = [];
 	const usedIds = new Set<string>();
 	const lineIds = new Set<string>();
-	const lines: ProposedBlockLine[] = [];
+	const lines: ProposedPromotedLine[] = [];
 
 	const useId = (id: string, where: string): boolean => {
 		if (usedIds.has(id)) {
@@ -94,7 +94,7 @@ export function validatePromotedBlock(
 		usedIds.add(id);
 		return true;
 	};
-	const addLine = (line: ProposedBlockLine, where: string) => {
+	const addLine = (line: ProposedPromotedLine, where: string) => {
 		if (lineIds.has(line.id)) {
 			problems.push(`${where}: another line already has id ${line.id}`);
 			return;
@@ -110,7 +110,7 @@ export function validatePromotedBlock(
 				problems.push(`${where}: give either keepId or content with fromIds, not both`);
 				return;
 			}
-			const kept = blockById.get(item.keepId);
+			const kept = lineById.get(item.keepId);
 			if (!kept) {
 				problems.push(`${where}: ${item.keepId} is not an existing block line`);
 				return;
@@ -128,7 +128,7 @@ export function validatePromotedBlock(
 			problems.push(`${where}: fromIds must name the reflections or block lines it is written from`);
 			return;
 		}
-		const unknown = fromIds.filter((id) => !activeById.has(id) && !blockById.has(id));
+		const unknown = fromIds.filter((id) => !activeById.has(id) && !lineById.has(id));
 		if (unknown.length > 0) {
 			problems.push(`${where}: ${unknown.join(", ")} ${unknown.length === 1 ? "is" : "are"} not an active reflection or block line`);
 			return;
@@ -139,12 +139,12 @@ export function validatePromotedBlock(
 			const [sourceId] = fromIds;
 			const reflection = activeById.get(sourceId);
 			if (reflection && reflection.content === content) {
-				addLine({ kind: "promote", id: reflection.id, line: renderBlockLine(reflection.id, content), reflection }, where);
+				addLine({ kind: "promote", id: reflection.id, line: renderPromotedLine(reflection.id, content), reflection }, where);
 				return;
 			}
-			const blockLine = blockById.get(sourceId);
-			if (blockLine && blockLine.content === content) {
-				addLine({ kind: "keep", id: blockLine.id, line: blockLine.raw.trim() }, where);
+			const promotedLine = lineById.get(sourceId);
+			if (promotedLine && promotedLine.content === content) {
+				addLine({ kind: "keep", id: promotedLine.id, line: promotedLine.raw.trim() }, where);
 				return;
 			}
 		}
@@ -154,12 +154,12 @@ export function validatePromotedBlock(
 			problems.push(`${where}: its content matches a retired or replaced reflection; reword it`);
 			return;
 		}
-		if (activeById.has(id) || blockById.has(id)) {
+		if (activeById.has(id) || lineById.has(id)) {
 			problems.push(`${where}: its content matches ${id}, which is not in its fromIds; use that id instead`);
 			return;
 		}
 		const sources = fromIds.flatMap((sourceId) => {
-			const record = activeById.get(sourceId) ?? args.blockRecords.get(sourceId);
+			const record = activeById.get(sourceId) ?? args.lineRecords.get(sourceId);
 			return record ? [record] : [];
 		});
 		const supportingObservationIds = Array.from(new Set(sources.flatMap((source) => source.supportingObservationIds)));
@@ -170,7 +170,7 @@ export function validatePromotedBlock(
 		addLine({
 			kind: "rewrite",
 			id,
-			line: renderBlockLine(id, content),
+			line: renderPromotedLine(id, content),
 			content,
 			fromIds,
 			replaces: sources.map((source) => source.id),
@@ -179,9 +179,9 @@ export function validatePromotedBlock(
 	});
 
 	if (problems.length > 0) return { problems };
-	const tokens = blockTokens(lines.map((line) => line.line));
-	if (tokens > args.maxBlockTokens) {
-		return { problems: [`the block would use ~${tokens} tokens, over the budget of ${args.maxBlockTokens}; shorten, merge or drop lines`] };
+	const tokens = promotedLineTokens(lines.map((line) => line.line));
+	if (tokens > args.maxPromotedTokens) {
+		return { problems: [`the block would use ~${tokens} tokens, over the budget of ${args.maxPromotedTokens}; shorten, merge or drop lines`] };
 	}
 	return { lines, tokens };
 }
@@ -213,18 +213,18 @@ export async function runPromoter(args: RunPromoterArgs): Promise<PromoterResult
 			}
 			accepted = result;
 			return {
-				content: [{ type: "text", text: `Accepted: ${result.lines.length} lines, ~${result.tokens} of ${args.maxBlockTokens} tokens.` }],
+				content: [{ type: "text", text: `Accepted: ${result.lines.length} lines, ~${result.tokens} of ${args.maxPromotedTokens} tokens.` }],
 				details: { accepted: true, lines: result.lines.length, tokens: result.tokens },
 			};
 		},
 	};
 
-	const blockText = args.blockLines.map((line) => `[${line.id}] ${line.content}`);
+	const promotedText = args.promotedLines.map((line) => `[${line.id}] ${line.content}`);
 	const reflectionLines = args.activeReflections.map((reflection) => reflectionToReviewLine(reflection, args.recordedAt.get(reflection.id), false));
-	const currentTokens = blockTokens(args.blockLines.map((line) => line.raw.trim()));
+	const currentTokens = promotedLineTokens(args.promotedLines.map((line) => line.raw.trim()));
 	const userText = withProjectContext(
 		args.projectContext,
-		`PROMOTED BLOCK:\n${joinOrEmpty(blockText)}\n\nACTIVE REFLECTIONS:\n${joinOrEmpty(reflectionLines)}\n\nBLOCK BUDGET: ${args.maxBlockTokens} estimated tokens for the whole block (the current block uses ~${currentTokens}).\n\nSubmit the new block, or do not call the tool if it should stay as it is.`,
+		`PROMOTED BLOCK:\n${joinOrEmpty(promotedText)}\n\nACTIVE REFLECTIONS:\n${joinOrEmpty(reflectionLines)}\n\nBLOCK BUDGET: ${args.maxPromotedTokens} estimated tokens for the whole block (the current block uses ~${currentTokens}).\n\nSubmit the new block, or do not call the tool if it should stay as it is.`,
 	);
 	const { system, prompts } = workerMessages(model, PROMOTE_SYSTEM, userText);
 	const context: AgentContext = { messages: system, tools: [setPromotedBlock as AgentTool<any>] };

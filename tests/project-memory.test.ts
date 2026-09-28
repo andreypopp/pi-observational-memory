@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { hashId } from "../src/ids.js";
-import { blockTokens, parsePromotedMemory, renderBlockLine, renderPromotedMemory } from "../src/project-memory/memory-file.js";
+import { promotedLineTokens, parsePromotedMemory, renderPromotedLine, renderPromotedMemory } from "../src/project-memory/memory-file.js";
 import { memoryClosure } from "../src/project-memory/closure.js";
 import { findSessionFile, readSessionEntries } from "../src/project-memory/sessions.js";
 import {
@@ -39,7 +39,7 @@ const SESSION = "01a0bfcf-d4de-739b-b7dd-5feda3a16ab8";
 
 describe(".memory.md", () => {
 	it("renders a fixed header and one line each, and round-trips", () => {
-		const lines = [renderBlockLine(REF_ID, REF_CONTENT)];
+		const lines = [renderPromotedLine(REF_ID, REF_CONTENT)];
 		const content = renderPromotedMemory(lines);
 
 		expect(content).toBe(`# Promoted memory\n\nDurable facts promoted from observational memory. \`recall <id>\` shows the evidence behind a line.\n\n${lines[0]}\n`);
@@ -63,7 +63,7 @@ describe(".memory.md", () => {
 	});
 
 	it("counts the whole rendered file in the token estimate", () => {
-		expect(blockTokens([])).toBe(Math.ceil(renderPromotedMemory([]).length / 4));
+		expect(promotedLineTokens([])).toBe(Math.ceil(renderPromotedMemory([]).length / 4));
 	});
 });
 

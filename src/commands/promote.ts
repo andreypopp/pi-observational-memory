@@ -15,11 +15,12 @@ import { contextFilesWithoutMemoryFile, resolveProjectContextFiles } from "../ho
 import { parsePromotedMemory, readPromotedMemory } from "../project-memory/memory-file.js";
 import {
 	applyPromotePlan,
-	blockLineRecords,
+	promotedLineRecords,
 	buildPromotePlan,
 	planChangesSomething,
 	promoteSummary,
 	renderPromotePreview,
+	type ApplyResult,
 	type PromotePlan,
 } from "../project-memory/promote.js";
 import { resolvePromoteTarget } from "../project-memory/target.js";
@@ -56,6 +57,50 @@ export async function withConsolidationLock<T>(runtime: Runtime, notify: Notify,
 	}
 }
 
+/** How confirmAndApplyPlan ended; "applied" carries applyPromotePlan's result, which can still refuse. */
+export type ConfirmedApply = { status: "preview only" } | { status: "declined" } | { status: "busy" } | { status: "applied"; result: ApplyResult };
+
+/**
+ * Preview a plan, ask to apply it and apply it against the live branch under the consolidation lock.
+ * Without UI it only prints the preview and `noUiNote`.
+ */
+export async function confirmAndApplyPlan(
+	pi: ExtensionAPI,
+	runtime: Runtime,
+	ctx: ExtensionCommandContext,
+	notify: Notify,
+	status: StatusWidget,
+	plan: PromotePlan,
+	options: {
+		ui: ExtensionCommandContext["ui"] | undefined;
+		previewTitle?: string;
+		/** Lines after the plan preview. */
+		previewDetails?: string[];
+		noUiNote: string;
+		confirmTitle: string;
+		/** Status line prefix while writing, like "Promoting memory". */
+		statusLabel: string;
+		/** What the lock's wait notice says is waiting; withConsolidationLock's default when unset. */
+		doing?: string;
+	},
+): Promise<ConfirmedApply> {
+	const { ui } = options;
+	const preview = [renderPromotePreview(plan, ctx.cwd, runtime.config.promoteMaxTokens, options.previewTitle), ...(options.previewDetails ?? [])].join("\n");
+	if (!ui) {
+		console.log(`${preview}\n\n${options.noUiNote}`);
+		return { status: "preview only" };
+	}
+	ui.notify(preview, "info");
+	if (!(await ui.confirm(options.confirmTitle, promoteSummary(plan, ctx.cwd)))) return { status: "declined" };
+	if (compactionBusy(runtime)) return { status: "busy" };
+	status.show(`${options.statusLabel}: writing ${basename(plan.target.memoryPath)} and .memory/…`);
+	const result = await withConsolidationLock(runtime, notify, async () => {
+		const entries = ctx.sessionManager.getBranch() as Entry[];
+		return applyPromotePlan(plan, entries, foldLedger(entries), (customType, data) => pi.appendEntry(customType, data), ctx.cwd);
+	}, options.doing);
+	return { status: "applied", result };
+}
+
 /** Ask the model for a new block and turn it into a plan. Undefined (after notifying) when there is nothing to do. */
 async function proposePromotion(runtime: Runtime, ctx: ExtensionCommandContext, notify: Notify, status: StatusWidget): Promise<PromotePlan | undefined> {
 	const target = resolvePromoteTarget(ctx.cwd);
@@ -90,13 +135,13 @@ async function proposePromotion(runtime: Runtime, ctx: ExtensionCommandContext, 
 			apiKey: worker.apiKey,
 			headers: worker.headers,
 			env: worker.env,
-			blockLines: parsed.lines,
-			blockRecords: blockLineRecords(parsed.lines, folded, target.memoryDir),
+			promotedLines: parsed.lines,
+			lineRecords: promotedLineRecords(parsed.lines, folded, target.memoryDir),
 			activeReflections: folded.activeReflections,
 			recordedAt,
 			retiredReflectionIds: folded.retiredReflectionIds,
 			projectContext: renderProjectContext(contextFiles, resolveProjectContextMaxTokens(runtime.config, contextWindow)).text,
-			maxBlockTokens: runtime.config.promoteMaxTokens,
+			maxPromotedTokens: runtime.config.promoteMaxTokens,
 			maxTurns: runtime.config.agentMaxTurns,
 			maxOutputTokens: runtime.config.agentMaxTokens,
 			thinkingLevel: workerThinkingLevel(runtime, worker),
@@ -151,40 +196,36 @@ export function registerPromoteCommand(pi: ExtensionAPI, runtime: Runtime): void
 				}
 				if (!plan) return;
 
-				const preview = renderPromotePreview(plan, ctx.cwd, runtime.config.promoteMaxTokens);
-				if (!hasUI || !ui) {
-					console.log(`${preview}\n\n/om:promote needs an interactive session to apply; nothing was written.`);
-					return;
-				}
-				ui.notify(preview, "info");
-				if (!(await ui.confirm("Promote memory?", promoteSummary(plan, ctx.cwd)))) {
+				const applied = await confirmAndApplyPlan(pi, runtime, ctx, notify, status, plan, {
+					ui: hasUI ? ui : undefined,
+					noUiNote: "/om:promote needs an interactive session to apply; nothing was written.",
+					confirmTitle: "Promote memory?",
+					statusLabel: "Promoting memory",
+				});
+				if (applied.status === "preview only") return;
+				if (applied.status === "declined") {
 					notify("Observational memory: /om:promote cancelled; nothing was written", "info");
 					return;
 				}
-				if (compactionBusy(runtime)) {
+				if (applied.status === "busy") {
 					notify("Observational memory: a compaction started meanwhile; nothing was written. Run /om:promote again when it finishes", "warning");
 					return;
 				}
-				const confirmed = plan;
-				status.show(`Promoting memory: writing ${basename(confirmed.target.memoryPath)} and .memory/…`);
-				const result = await withConsolidationLock(runtime, notify, async () => {
-					const entries = ctx.sessionManager.getBranch() as Entry[];
-					return applyPromotePlan(confirmed, entries, foldLedger(entries), (customType, data) => pi.appendEntry(customType, data), ctx.cwd);
-				});
+				const { result } = applied;
 				status.hide();
 				if (!result.ok) {
 					notify(`Observational memory: nothing was written: ${result.reason}. Run /om:promote again`, "warning");
 					return;
 				}
 				debugLog("promote.applied", {
-					lines: confirmed.proposedLines.length,
-					tokens: confirmed.tokens,
+					lines: plan.proposedLines.length,
+					tokens: plan.tokens,
 					memoryFilesWritten: result.memoryFilesWritten.length,
 					memoryFilesRemoved: result.memoryFilesRemoved.length,
-					promoted: confirmed.promotedIds.length,
+					promoted: plan.promotedIds.length,
 				});
 				notify(
-					`Observational memory: promoted ${confirmed.promotedIds.length} line(s) into ${confirmed.target.memoryPath}, wrote ${result.memoryFilesWritten.length} and removed ${result.memoryFilesRemoved.length} .memory file(s). The main agent sees them from its next prompt; commit .memory.md and .memory/ together.`,
+					`Observational memory: promoted ${plan.promotedIds.length} line(s) into ${plan.target.memoryPath}, wrote ${result.memoryFilesWritten.length} and removed ${result.memoryFilesRemoved.length} .memory file(s). The main agent sees them from its next prompt; commit .memory.md and .memory/ together.`,
 					"info",
 				);
 			} catch (error) {

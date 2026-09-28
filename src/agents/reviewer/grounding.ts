@@ -3,12 +3,12 @@ import { Type } from "@earendil-works/pi-ai";
 import type { Static } from "typebox";
 import { debugLog } from "../../debug-log.js";
 import { hashId } from "../../ids.js";
-import { blockTokens, renderBlockLine, type BlockLine } from "../../project-memory/memory-file.js";
+import { promotedLineTokens, renderPromotedLine, type PromotedLine } from "../../project-memory/memory-file.js";
 import type { PromoteSourceRecord } from "../promoter/agent.js";
 import { normalizeContent } from "../worker-format.js";
 
 /** What /om:ground's review decided for one promoted block line. */
-export type BlockRevision =
+export type PromotedLineRevision =
 	| { id: string; action: "rewrite"; content: string; reason: string }
 	| { id: string; action: "remove"; reason: string };
 
@@ -23,10 +23,10 @@ export type GroundingReviewArgs = {
 	/** `.memory.md`, holding the promoted lines; labels their section. */
 	memoryPath: string;
 	/** The promoted block's lines as read for this pass. */
-	blockLines: BlockLine[];
+	promotedLines: PromotedLine[];
 	/** Reflection records behind block line ids; a rewrite carries their evidence. */
-	blockRecords: ReadonlyMap<string, PromoteSourceRecord>;
-	maxBlockTokens: number;
+	lineRecords: ReadonlyMap<string, PromoteSourceRecord>;
+	maxPromotedTokens: number;
 	/** Called with the running count after each repo tool call starts. */
 	onToolCall?: (count: number) => void;
 };
@@ -34,7 +34,7 @@ export type GroundingReviewArgs = {
 export type GroundingReviewResult = {
 	toolCalls: number;
 	/** Block line decisions, in block order. */
-	blockRevisions: BlockRevision[];
+	lineRevisions: PromotedLineRevision[];
 	staleText: StaleTextReport[];
 };
 
@@ -64,21 +64,21 @@ type ReviseBlockArgs = Static<typeof ReviseBlockSchema>;
  * stale hand-written text. Nothing is written here; /om:ground applies the collected decisions later.
  */
 export function createReviseBlockTool(args: {
-	blockLines: readonly BlockLine[];
-	blockRecords: ReadonlyMap<string, PromoteSourceRecord>;
+	promotedLines: readonly PromotedLine[];
+	lineRecords: ReadonlyMap<string, PromoteSourceRecord>;
 	activeReflectionIds: ReadonlySet<string>;
 	retiredReflectionIds: ReadonlySet<string>;
-	maxBlockTokens: number;
-}): { tool: AgentTool<typeof ReviseBlockSchema>; result: () => Pick<GroundingReviewResult, "blockRevisions" | "staleText"> } {
-	const blockById = new Map(args.blockLines.map((line) => [line.id, line]));
-	const revisions = new Map<string, BlockRevision>();
+	maxPromotedTokens: number;
+}): { tool: AgentTool<typeof ReviseBlockSchema>; result: () => Pick<GroundingReviewResult, "lineRevisions" | "staleText"> } {
+	const lineById = new Map(args.promotedLines.map((line) => [line.id, line]));
+	const revisions = new Map<string, PromotedLineRevision>();
 	const staleText: StaleTextReport[] = [];
-	const currentTokens = blockTokens(args.blockLines.map((line) => line.raw.trim()));
+	const currentTokens = promotedLineTokens(args.promotedLines.map((line) => line.raw.trim()));
 
-	const linesWith = (candidate: ReadonlyMap<string, BlockRevision>) => args.blockLines.flatMap((line) => {
+	const linesWith = (candidate: ReadonlyMap<string, PromotedLineRevision>) => args.promotedLines.flatMap((line) => {
 		const revision = candidate.get(line.id);
 		if (!revision) return [line.raw.trim()];
-		return revision.action === "remove" ? [] : [renderBlockLine(hashId(revision.content), revision.content)];
+		return revision.action === "remove" ? [] : [renderPromotedLine(hashId(revision.content), revision.content)];
 	});
 
 	const tool: AgentTool<typeof ReviseBlockSchema> = {
@@ -88,12 +88,12 @@ export function createReviseBlockTool(args: {
 		parameters: ReviseBlockSchema,
 		execute: async (_id, params: ReviseBlockArgs) => {
 			const problems: string[] = [];
-			const accepted = new Map<string, BlockRevision>();
+			const accepted = new Map<string, PromotedLineRevision>();
 			const newIds = new Set(Array.from(revisions.values()).flatMap((revision) => revision.action === "rewrite" ? [hashId(revision.content)] : []));
 
 			for (const item of params.revise ?? []) {
 				const reason = item.reason.trim();
-				if (!blockById.has(item.id)) {
+				if (!lineById.has(item.id)) {
 					problems.push(`${item.id} is not a promoted block line`);
 					continue;
 				}
@@ -114,7 +114,7 @@ export function createReviseBlockTool(args: {
 					problems.push(`${item.id}: content must be a non-empty single line`);
 					continue;
 				}
-				if (!args.blockRecords.has(item.id)) {
+				if (!args.lineRecords.has(item.id)) {
 					problems.push(`${item.id} has no recorded evidence to carry forward; remove it or leave it`);
 					continue;
 				}
@@ -123,7 +123,7 @@ export function createReviseBlockTool(args: {
 					problems.push(`${item.id}: its content matches the line itself or a retired reflection; reword it`);
 					continue;
 				}
-				if (blockById.has(newId) || args.activeReflectionIds.has(newId) || newIds.has(newId)) {
+				if (lineById.has(newId) || args.activeReflectionIds.has(newId) || newIds.has(newId)) {
 					problems.push(`${item.id}: its content matches ${newId}, which already exists; remove the line instead`);
 					continue;
 				}
@@ -133,9 +133,9 @@ export function createReviseBlockTool(args: {
 
 			if (accepted.size > 0) {
 				const candidate = new Map([...revisions, ...accepted]);
-				const tokens = blockTokens(linesWith(candidate));
-				if (tokens > args.maxBlockTokens && tokens > currentTokens) {
-					problems.push(`the block would use ~${tokens} tokens, over the budget of ${args.maxBlockTokens}; shorten the rewrites`);
+				const tokens = promotedLineTokens(linesWith(candidate));
+				if (tokens > args.maxPromotedTokens && tokens > currentTokens) {
+					problems.push(`the block would use ~${tokens} tokens, over the budget of ${args.maxPromotedTokens}; shorten the rewrites`);
 					accepted.clear();
 				}
 			}
@@ -160,7 +160,7 @@ export function createReviseBlockTool(args: {
 	return {
 		tool,
 		result: () => ({
-			blockRevisions: args.blockLines.flatMap((line) => revisions.get(line.id) ?? []),
+			lineRevisions: args.promotedLines.flatMap((line) => revisions.get(line.id) ?? []),
 			staleText,
 		}),
 	};

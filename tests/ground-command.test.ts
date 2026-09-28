@@ -24,7 +24,7 @@ vi.mock("../src/agents/reviewer/agent.js", async (importOriginal) => ({
 import { GROUND_STATUS_WIDGET, registerGroundCommand } from "../src/commands/ground.js";
 import { registerCompactionHook } from "../src/hooks/compaction-hook.js";
 import { hashId } from "../src/ids.js";
-import { renderBlockLine, renderPromotedMemory } from "../src/project-memory/memory-file.js";
+import { renderPromotedLine, renderPromotedMemory } from "../src/project-memory/memory-file.js";
 import { Runtime } from "../src/runtime.js";
 import { foldLedger, OM_REFLECTIONS_DROPPED, OM_REFLECTIONS_RECORDED, recallMemorySources } from "../src/session-ledger/index.js";
 import {
@@ -49,7 +49,7 @@ beforeEach(() => {
 	mkdirSync(join(root, ".git"));
 	writeFileSync(join(root, ".git", "HEAD"), "ref: refs/heads/main\n");
 	writeFileSync(join(root, "AGENTS.md"), HAND_WRITTEN);
-	writeFileSync(join(root, ".memory.md"), renderPromotedMemory([renderBlockLine(P.id, P.content), renderBlockLine(Q.id, Q.content)]));
+	writeFileSync(join(root, ".memory.md"), renderPromotedMemory([renderPromotedLine(P.id, P.content), renderPromotedLine(Q.id, Q.content)]));
 	for (const mock of Object.values(mockAgents)) {
 		mock.mockReset();
 		mock.mockResolvedValue(undefined);
@@ -63,7 +63,7 @@ beforeEach(() => {
 			retirements: [{ reflectionIds: [A.id], kind: "stale", reason: "src/config.ts:3 reads bar.json" }],
 			grounding: {
 				toolCalls: 2,
-				blockRevisions: [
+				lineRevisions: [
 					{ id: P.id, action: "rewrite", content: NEW_P, reason: "justfile:1" },
 					{ id: Q.id, action: "remove", reason: "no eslint config" },
 				],
@@ -187,12 +187,12 @@ describe("/om:ground", () => {
 		expect(args.maxTurns).toBe(60);
 		expect(args.grounding.root).toBe(root);
 		expect(args.grounding.tools.map((tool: any) => tool.name)).toEqual(["read", "grep", "find", "ls", "bash"]);
-		expect(args.grounding.blockLines.map((line: any) => line.id)).toEqual([P.id, Q.id]);
-		expect(args.grounding.blockRecords.get(P.id)).toMatchObject({ id: P.id });
+		expect(args.grounding.promotedLines.map((line: any) => line.id)).toEqual([P.id, Q.id]);
+		expect(args.grounding.lineRecords.get(P.id)).toMatchObject({ id: P.id });
 		expect(args.projectContext ?? "").not.toContain("Build with make");
 
 		const newId = hashId(NEW_P);
-		expect(memory()).toBe(renderPromotedMemory([renderBlockLine(newId, NEW_P)]));
+		expect(memory()).toBe(renderPromotedMemory([renderPromotedLine(newId, NEW_P)]));
 		expect(agents()).toBe(HAND_WRITTEN);
 		const dropped = session.appended.filter((entry) => entry.customType === OM_REFLECTIONS_DROPPED).map((entry) => entry.data);
 		expect(dropped).toContainEqual({ reflectionIds: [A.id], kind: "stale", reason: "src/config.ts:3 reads bar.json", coversUpToId: "raw-1" });
@@ -251,7 +251,7 @@ describe("/om:ground", () => {
 
 	it("does not apply revisions when the block changed during grounding", async () => {
 		mockAgents.runObserver.mockImplementation(async () => {
-			writeFileSync(join(root, ".memory.md"), renderPromotedMemory([renderBlockLine(P.id, P.content)]));
+			writeFileSync(join(root, ".memory.md"), renderPromotedMemory([renderPromotedLine(P.id, P.content)]));
 			return undefined;
 		});
 		const { run, lastReport } = setup();
@@ -315,11 +315,11 @@ describe("/om:ground", () => {
 		const args = mockAgents.runReflectionReview.mock.calls[0][0];
 		expect(args.grounding.root).toBe(root);
 		expect(args.grounding.memoryPath).toBe(join(root, ".memory.md"));
-		expect(memory()).toContain(renderBlockLine(hashId(NEW_P), NEW_P));
+		expect(memory()).toContain(renderPromotedLine(hashId(NEW_P), NEW_P));
 	});
 
 	it("leaves the active reflections untouched when the review makes no changes", async () => {
-		mockAgents.runReflectionReview.mockImplementation(async (args: any) => ({ replacements: [], retirements: [], grounding: { toolCalls: 0, blockRevisions: [], staleText: [] } }));
+		mockAgents.runReflectionReview.mockImplementation(async (args: any) => ({ replacements: [], retirements: [], grounding: { toolCalls: 0, lineRevisions: [], staleText: [] } }));
 		const { run, session, lastReport } = setup();
 		await run();
 		expect(foldLedger(session.sessionManager.getBranch() as any).activeReflections.map((r) => r.id)).toEqual([A.id]);

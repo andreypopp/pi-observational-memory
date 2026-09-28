@@ -4,7 +4,7 @@ import { observationPoolMetrics } from "../agents/dropper/pool.js";
 import { renderProjectContext } from "../agents/project-context.js";
 import { resolveCompactAfterTokens, resolveProjectContextMaxTokens } from "../config.js";
 import { resolveProjectContextFiles } from "../hooks/project-context.js";
-import { blockTokens, parsePromotedMemory, readPromotedMemory } from "../project-memory/memory-file.js";
+import { promotedLineTokens, parsePromotedMemory, readPromotedMemory } from "../project-memory/memory-file.js";
 import { resolvePromoteTarget } from "../project-memory/target.js";
 import type { Runtime } from "../runtime.js";
 import {
@@ -66,7 +66,7 @@ function promotedLine(cwd: string): string[] {
 		const raw = readPromotedMemory(target.memoryPath);
 		if (raw === undefined) return [];
 		const parsed = parsePromotedMemory(raw);
-		const tokens = blockTokens(parsed.lines.map((line) => line.raw.trim()));
+		const tokens = promotedLineTokens(parsed.lines.map((line) => line.raw.trim()));
 		const path = relative(cwd, target.memoryPath) || target.memoryPath;
 		return [`Promoted: ${parsed.lines.length} line${parsed.lines.length === 1 ? "" : "s"} (~${tokens.toLocaleString()} tokens) in ${path}`];
 	} catch {

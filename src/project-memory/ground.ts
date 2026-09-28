@@ -1,14 +1,14 @@
-import type { BlockRevision } from "../agents/reviewer/grounding.js";
-import type { ProposedBlockLine } from "../agents/promoter/agent.js";
+import type { PromotedLineRevision } from "../agents/reviewer/grounding.js";
+import type { ProposedPromotedLine } from "../agents/promoter/agent.js";
 import { hashId } from "../ids.js";
 import type { FoldedLedger } from "../session-ledger/index.js";
-import { parsePromotedMemory, readPromotedMemory, renderBlockLine, type BlockLine } from "./memory-file.js";
-import { blockLineRecords, buildPromotePlan, type PromotePlan } from "./promote.js";
+import { parsePromotedMemory, readPromotedMemory, renderPromotedLine, type PromotedLine } from "./memory-file.js";
+import { promotedLineRecords, buildPromotePlan, type PromotePlan } from "./promote.js";
 import { displayPath, type PromoteTarget } from "./target.js";
 
-export type GroundBlockPlan = { ok: true; plan: PromotePlan; rewritten: number; removed: number } | { ok: false; reason: string };
+export type GroundPromotePlan = { ok: true; plan: PromotePlan; rewritten: number; removed: number } | { ok: false; reason: string };
 
-function sameLines(a: readonly BlockLine[], b: readonly BlockLine[]): boolean {
+function sameLines(a: readonly PromotedLine[], b: readonly PromotedLine[]): boolean {
 	return a.length === b.length && a.every((line, index) => line.id === b[index].id && line.raw === b[index].raw);
 }
 
@@ -18,15 +18,15 @@ function sameLines(a: readonly BlockLine[], b: readonly BlockLine[]): boolean {
  * lines' reflections are retired as stale with the evidence. Refuses when the block changed since the
  * review read it.
  */
-export function buildGroundBlockPlan(args: {
+export function buildGroundPromotePlan(args: {
 	target: PromoteTarget;
-	reviewedLines: readonly BlockLine[];
-	revisions: readonly BlockRevision[];
+	reviewedLines: readonly PromotedLine[];
+	revisions: readonly PromotedLineRevision[];
 	folded: FoldedLedger;
 	sessionId: string | undefined;
 	promotedAt: string;
 	cwd: string;
-}): GroundBlockPlan {
+}): GroundPromotePlan {
 	const { target, folded } = args;
 	const originalContent = readPromotedMemory(target.memoryPath);
 	const { lines } = parsePromotedMemory(originalContent ?? "");
@@ -35,8 +35,8 @@ export function buildGroundBlockPlan(args: {
 	}
 
 	const revisionById = new Map(args.revisions.map((revision) => [revision.id, revision]));
-	const records = blockLineRecords(lines, folded, target.memoryDir);
-	const proposedLines: ProposedBlockLine[] = [];
+	const records = promotedLineRecords(lines, folded, target.memoryDir);
+	const proposedLines: ProposedPromotedLine[] = [];
 	const reasons = new Map<string, string>();
 	const staleRetirements: NonNullable<PromotePlan["staleRetirements"]> = [];
 	let rewritten = 0;
@@ -56,7 +56,7 @@ export function buildGroundBlockPlan(args: {
 			proposedLines.push({
 				kind: "rewrite",
 				id,
-				line: renderBlockLine(id, revision.content),
+				line: renderPromotedLine(id, revision.content),
 				content: revision.content,
 				fromIds: [line.id],
 				replaces: [record.id],

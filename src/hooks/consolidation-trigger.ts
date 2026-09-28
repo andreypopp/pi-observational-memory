@@ -9,7 +9,7 @@ import type { GroundingReviewArgs } from "../agents/reviewer/grounding.js";
 import { createRepoTools } from "../agents/reviewer/repo-tools.js";
 import { debugLog, withDebugLogContext } from "../debug-log.js";
 import type { ConsolidationReport, GroundingRequest, PassProgressDetail, PassStage } from "../reflect-report.js";
-import { blockLineRecords } from "../project-memory/promote.js";
+import { promotedLineRecords } from "../project-memory/promote.js";
 import { resolveObserverChunkMaxTokens, resolveProjectContextMaxTokens } from "../config.js";
 import { contextFilesWithoutMemoryFile, resolveProjectContextFiles, type ResolvedProjectContextFiles } from "./project-context.js";
 import type { ConsolidationPhase, ResolveCtx, ResolveResult, Runtime } from "../runtime.js";
@@ -251,9 +251,9 @@ function groundingReviewArgs(runtime: Runtime, grounding: GroundingRequest, fold
 		tools: createRepoTools(grounding.target.root),
 		root: grounding.target.root,
 		memoryPath: grounding.target.memoryPath,
-		blockLines: grounding.parsed.lines,
-		blockRecords: blockLineRecords(grounding.parsed.lines, folded, grounding.target.memoryDir),
-		maxBlockTokens: runtime.config.promoteMaxTokens,
+		promotedLines: grounding.parsed.lines,
+		lineRecords: promotedLineRecords(grounding.parsed.lines, folded, grounding.target.memoryDir),
+		maxPromotedTokens: runtime.config.promoteMaxTokens,
 		onToolCall: () => {
 			grounding.toolCalls++;
 			grounding.onToolCall?.();
@@ -754,7 +754,7 @@ async function runReviewStep(
 	if (grounding && result) {
 		if (result.grounding) {
 			grounding.reviewed = true;
-			grounding.blockRevisions = result.grounding.blockRevisions;
+			grounding.lineRevisions = result.grounding.lineRevisions;
 			grounding.staleText = result.grounding.staleText;
 		}
 		grounding.reflectionsRewritten += result.replacements.length;
