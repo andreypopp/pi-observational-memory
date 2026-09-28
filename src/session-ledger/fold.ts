@@ -123,3 +123,15 @@ export function foldLedger(entries: Entry[], options: FoldLedgerOptions = {}): F
 		reflectionsById,
 	};
 }
+
+/** Timestamp of the first valid om.reflections.recorded entry that recorded each reflection id, in branch order. */
+export function reflectionRecordTimestamps(entries: Entry[]): Map<string, string | undefined> {
+	const recordedAt = new Map<string, string | undefined>();
+	for (const entry of entries) {
+		if (!isCustomEntry(entry, OM_REFLECTIONS_RECORDED) || !isReflectionsRecordedData(entry.data)) continue;
+		for (const reflection of entry.data.reflections) {
+			if (!recordedAt.has(reflection.id)) recordedAt.set(reflection.id, entry.timestamp);
+		}
+	}
+	return recordedAt;
+}

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { foldLedger } from "../src/session-ledger/index.js";
+import { foldLedger, reflectionRecordTimestamps } from "../src/session-ledger/index.js";
 import {
 	branchSummary,
 	observation,
@@ -199,5 +199,20 @@ describe("session-ledger V3 folding", () => {
 		];
 
 		expect(foldLedger(entries).activeReflections).toEqual([ref1]);
+	});
+
+	it("reports the timestamp of the first entry that recorded each reflection", () => {
+		const ref1 = reflection("eeeeeeeeeeee", ["aaaaaaaaaaaa"]);
+		const ref2 = reflection("ffffffffffff", ["aaaaaaaaaaaa"]);
+		const entries = [
+			textCustomMessage("raw-1", "aaaa"),
+			reflectionsRecordedEntry("om-ref-1", { reflections: [ref1], coversUpToId: "raw-1" }, { timestamp: "2026-05-01T09:00:00.000Z" }),
+			reflectionsRecordedEntry("om-ref-2", { reflections: [ref2, ref1], coversUpToId: "raw-1" }, { timestamp: "2026-05-02T09:00:00.000Z" }),
+		];
+
+		expect(reflectionRecordTimestamps(entries)).toEqual(new Map([
+			["eeeeeeeeeeee", "2026-05-01T09:00:00.000Z"],
+			["ffffffffffff", "2026-05-02T09:00:00.000Z"],
+		]));
 	});
 });

@@ -85,11 +85,13 @@ It receives an oldest-first chunk of raw/source entries, validates source ids, a
 
 The reflector runs in the reflect/drop lane from `turn_end` when its raw-token clock reaches `reflectAfterTokens` and the observer is not due.
 
-It reads active observations and current reflections, then appends durable new reflections as `om.reflections.recorded`. Reflections must cite valid supporting observation ids. The reflector's coverage annotations describe current support state only; this first coverage-stewardship model does not repair historical coverage on existing reflections that already missed a supporting observation id.
+It reads active observations and active reflections, then appends durable new reflections as `om.reflections.recorded`. Reflections must cite valid supporting observation ids. It never proposes a reflection again once it has been retired.
+
+When that crystallize run records at least one reflection, a second call, the review, looks over all active reflections: those recorded in this run are marked `[new]`, and each shows when it was recorded. Recent observations serve as evidence. The review can retire reflections outright or replace one or more with a single shorter reflection that states the current truth. `[new]` reflections can only be merged into a replacement, never retired outright. A replacement records the ids it replaces in `replaces`, and its supporting observations are the union of theirs. When a replacement's text matches an existing active reflection, the replaced ids are retired in favor of that reflection instead of recording a copy. The reflector's coverage annotations describe current support state only; this first coverage-stewardship model does not repair historical coverage on existing reflections that already missed a supporting observation id.
 
 ### Dropper
 
-The dropper runs only as post-reflection maintenance: after the reflector records non-empty same-turn reflections, the dropper may run if the folded active observation ledger is over `observationsPoolTargetTokens`. The dropper can see same-turn new reflections before deciding what to prune.
+The dropper runs only as post-reflection maintenance: after the reflector's crystallize or review run records something, the dropper may run if the folded active observation ledger is over `observationsPoolTargetTokens`. The dropper can see same-turn new reflections before deciding what to prune.
 
 The dropper can only drop active observation ids. It cannot rewrite or merge observations. Relevance is treated as importance/resistance rather than an absolute lock: `critical` observations are the highest-resistance candidates, but they can be dropped when the model judges that age, reflection coverage, supersession, redundancy, and semantic safety make removal from active memory safe. Its maximum drop count is computed from tokens over target converted to an approximate observation count, and the model may drop fewer or none.
 
@@ -216,7 +218,7 @@ When upgrading from V2, update settings and start a new clean session.
 | Full fold | Compaction mode that folds observations, reflections, drops, and retirements through the boundary. |
 | Progress watermark | `coversUpToId`; marker used for raw-token progress clocks. |
 | Observer | Background agent that records observations. |
-| Reflector | Background agent that records durable reflections. |
+| Reflector | Background agent that records durable reflections, then reviews them (retire/replace). |
 | Dropper | Background agent that drops active observations by id. |
 | Recall | Agent tool for exact evidence behind a memory id. |
 

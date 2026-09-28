@@ -49,6 +49,9 @@ replacing reflection lists what it replaced in `Reflection.replaces`. `foldLedge
 `reflections` and exposes `activeReflections`: every worker input, dropper coverage, status/view count and
 projection must use active reflections, while recall resolves retired ids. Projections gate retirements on the
 reflections boundary, so normal compactions keep them frozen until a full fold; retirement adds no trigger.
+Retirements come from the reflector's second "review" call (`src/agents/reviewer`), which runs in
+the reflector stage only after crystallize recorded something (or with `forceReflection`). Its id and collision
+rules live in code, not the prompt. Crystallize dedupes against retired ids too.
 Sessions without retirements must stay byte-for-byte unchanged (tests assert this across projection, status,
 recall and worker inputs).
 

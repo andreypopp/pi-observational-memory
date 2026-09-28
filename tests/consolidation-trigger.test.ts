@@ -4,6 +4,7 @@ const mockAgents = vi.hoisted(() => ({
 	runObserver: vi.fn(),
 	runReflector: vi.fn(),
 	runDropper: vi.fn(),
+	runReflectionReview: vi.fn(),
 }));
 
 vi.mock("../src/agents/observer/agent.js", async (importOriginal) => ({
@@ -12,12 +13,14 @@ vi.mock("../src/agents/observer/agent.js", async (importOriginal) => ({
 }));
 vi.mock("../src/agents/reflector/agent.js", () => ({ runReflector: mockAgents.runReflector }));
 vi.mock("../src/agents/dropper/agent.js", () => ({ runDropper: mockAgents.runDropper }));
+vi.mock("../src/agents/reviewer/agent.js", () => ({ runReflectionReview: mockAgents.runReflectionReview }));
 
 import { ObserverStreamError } from "../src/agents/observer/agent.js";
-import { registerConsolidationTrigger } from "../src/hooks/consolidation-trigger.js";
+import { registerConsolidationTrigger, runConsolidationPipeline } from "../src/hooks/consolidation-trigger.js";
 import {
 	OM_OBSERVATIONS_DROPPED,
 	OM_OBSERVATIONS_RECORDED,
+	OM_REFLECTIONS_DROPPED,
 	OM_REFLECTIONS_RECORDED,
 } from "../src/session-ledger/index.js";
 import {
@@ -35,6 +38,8 @@ beforeEach(() => {
 	mockAgents.runObserver.mockReset();
 	mockAgents.runReflector.mockReset();
 	mockAgents.runDropper.mockReset();
+	mockAgents.runReflectionReview.mockReset();
+	mockAgents.runReflectionReview.mockResolvedValue(undefined);
 	mockAgents.runObserver.mockResolvedValue(undefined);
 	mockAgents.runReflector.mockResolvedValue(undefined);
 	mockAgents.runDropper.mockResolvedValue(undefined);
@@ -385,6 +390,7 @@ describe("V3 consolidation trigger", () => {
 			[expect.stringMatching(/^Observational memory: observer running on ~\d+-token chunk$/), "info"],
 			["Observational memory: 1 observation recorded", "info"],
 			["Observational memory: reflector running (~2 tokens)", "info"],
+			["Observational memory: reflection review running over 1 reflection", "info"],
 			["Observational memory: dropper running after reflection — active observation pool ~19 / 5 target tokens (380%)", "info"],
 		]);
 	});
@@ -1205,5 +1211,130 @@ describe("reflection retirement in worker inputs", () => {
 
 		expect(mockAgents.runReflector).toHaveBeenCalledWith(expect.objectContaining({ reflections: [kept, retired] }));
 		expect(mockAgents.runDropper).toHaveBeenCalledWith(expect.objectContaining({ reflections: [kept, retired, newRef] }));
+	});
+});
+
+describe("reflection review run", () => {
+	const obs = observation("aaaaaaaaaaaa", { sourceEntryIds: ["raw-1"], tokenCount: 10 });
+	const old = reflection("eeeeeeeeeeee", ["aaaaaaaaaaaa"], { content: "Old reflection" });
+	const stale = reflection("ffffffffffff", ["aaaaaaaaaaaa"], { content: "Stale reflection" });
+	const gone = reflection("999999999999", ["aaaaaaaaaaaa"], { content: "Long retired reflection" });
+	const newRef = reflection("111111111111", ["aaaaaaaaaaaa"], { content: "New reflection" });
+	const replacement = reflection("222222222222", ["aaaaaaaaaaaa"], { content: "Merged reflection", replaces: ["eeeeeeeeeeee", "111111111111"] });
+
+	function reviewEntries(): TestEntry[] {
+		return [
+			textCustomMessage("raw-1", "aaaaaaaa"),
+			observationsRecordedEntry("om-obs", { observations: [obs], coversUpToId: "raw-1" }),
+			reflectionsRecordedEntry("om-ref", { reflections: [old, stale, gone], coversUpToId: "raw-1" }),
+			reflectionsDroppedEntry("om-retire", { reflectionIds: ["999999999999"], coversUpToId: "raw-1" }),
+			textCustomMessage("raw-2", "bbbbbbbb"),
+		];
+	}
+
+	const reviewResult = {
+		replacements: [replacement],
+		retirements: [
+			{ reflectionIds: ["eeeeeeeeeeee", "111111111111"], replacedBy: "222222222222" },
+			{ reflectionIds: ["ffffffffffff"] },
+		],
+	};
+
+	it("does not run the review when crystallize records nothing", async () => {
+		const { fire, runLaunchedWork, pi } = setup({ entries: reviewEntries(), observeAfterTokens: 999 });
+
+		fire();
+		await runLaunchedWork();
+
+		expect(mockAgents.runReflector).toHaveBeenCalled();
+		expect(mockAgents.runReflectionReview).not.toHaveBeenCalled();
+		expect(mockAgents.runDropper).not.toHaveBeenCalled();
+		expect(pi.appendEntry).not.toHaveBeenCalled();
+	});
+
+	it("dedupes crystallize proposals against every recorded reflection id, including retired ones", async () => {
+		const { fire, runLaunchedWork } = setup({ entries: reviewEntries(), observeAfterTokens: 999 });
+
+		fire();
+		await runLaunchedWork();
+
+		const args = mockAgents.runReflector.mock.calls[0][0];
+		expect(args.reflections).toEqual([old, stale]);
+		expect(args.knownReflectionIds).toEqual(new Set(["eeeeeeeeeeee", "ffffffffffff", "999999999999"]));
+	});
+
+	it("reviews after crystallize, writes entries in order, and gives the dropper the post-review active set", async () => {
+		mockAgents.runReflector.mockResolvedValueOnce([newRef]);
+		mockAgents.runReflectionReview.mockResolvedValueOnce(reviewResult);
+		const { fire, runLaunchedWork, pi } = setup({ entries: reviewEntries(), observeAfterTokens: 999, observationsPoolTargetTokens: 5 });
+
+		fire();
+		await runLaunchedWork();
+
+		const reviewArgs = mockAgents.runReflectionReview.mock.calls[0][0];
+		expect(reviewArgs.reflections).toEqual([old, stale, newRef]);
+		expect(reviewArgs.newReflectionIds).toEqual(new Set(["111111111111"]));
+		expect(reviewArgs.retiredReflectionIds).toEqual(new Set(["999999999999"]));
+		expect(reviewArgs.observations).toEqual([obs]);
+		expect(Array.from(reviewArgs.recordedAt.keys())).toEqual(["eeeeeeeeeeee", "ffffffffffff", "999999999999", "111111111111"]);
+		expect(reviewArgs.recordedAt.get("eeeeeeeeeeee")).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/);
+		expect(pi.appendEntry.mock.calls).toEqual([
+			[OM_REFLECTIONS_RECORDED, { reflections: [newRef], coversUpToId: "raw-1" }],
+			[OM_REFLECTIONS_RECORDED, { reflections: [replacement], coversUpToId: "raw-1" }],
+			[OM_REFLECTIONS_DROPPED, { reflectionIds: ["eeeeeeeeeeee", "111111111111"], replacedBy: "222222222222", coversUpToId: "raw-1" }],
+			[OM_REFLECTIONS_DROPPED, { reflectionIds: ["ffffffffffff"], coversUpToId: "raw-1" }],
+		]);
+		expect(mockAgents.runDropper).toHaveBeenCalledWith(expect.objectContaining({ reflections: [replacement] }));
+	});
+
+	it("keeps crystallize output and still runs the dropper when the review fails", async () => {
+		mockAgents.runReflector.mockResolvedValueOnce([newRef]);
+		mockAgents.runReflectionReview.mockRejectedValueOnce(new Error("review exploded"));
+		const { fire, runLaunchedWork, pi, runtime, ctx } = setup({ entries: reviewEntries(), observeAfterTokens: 999, observationsPoolTargetTokens: 5 });
+
+		fire();
+		await runLaunchedWork();
+
+		expect(pi.appendEntry.mock.calls).toEqual([[OM_REFLECTIONS_RECORDED, { reflections: [newRef], coversUpToId: "raw-1" }]]);
+		expect(runtime.lastReflectorError).toBe("review exploded");
+		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("reflector failed: review exploded"), "warning");
+		expect(mockAgents.runDropper).toHaveBeenCalledWith(expect.objectContaining({ reflections: [old, stale, newRef] }));
+	});
+
+	it("retries a failed review once with the fallback model", async () => {
+		mockAgents.runReflector.mockResolvedValueOnce([newRef]);
+		mockAgents.runReflectionReview
+			.mockRejectedValueOnce(new Error("review failed"))
+			.mockResolvedValueOnce(reviewResult);
+		const { fire, runLaunchedWork, pi, runtime } = setup({ entries: reviewEntries(), observeAfterTokens: 999 });
+		runtime.resolveFallbackModel.mockResolvedValueOnce({ ok: true, model: { provider: "fallback", id: "fb" }, apiKey: "fb-key" });
+
+		fire();
+		await runLaunchedWork();
+
+		expect(mockAgents.runReflectionReview).toHaveBeenCalledTimes(2);
+		expect(mockAgents.runReflectionReview.mock.calls[1][0].apiKey).toBe("fb-key");
+		expect(pi.appendEntry).toHaveBeenCalledWith(OM_REFLECTIONS_RECORDED, { reflections: [replacement], coversUpToId: "raw-1" });
+	});
+
+	it("can force a reflection pass that reviews even when crystallize records nothing", async () => {
+		mockAgents.runReflectionReview.mockResolvedValueOnce({ replacements: [], retirements: [{ reflectionIds: ["ffffffffffff"] }] });
+		const { pi, runtime, ctx } = setup({ entries: reviewEntries(), observeAfterTokens: 999, reflectAfterTokens: 999, observationsPoolTargetTokens: 5 });
+
+		await runConsolidationPipeline(pi as any, runtime as any, ctx as any, { forceReflection: true });
+
+		expect(mockAgents.runReflector).toHaveBeenCalled();
+		expect(mockAgents.runReflectionReview.mock.calls[0][0].newReflectionIds).toEqual(new Set());
+		expect(pi.appendEntry.mock.calls).toEqual([[OM_REFLECTIONS_DROPPED, { reflectionIds: ["ffffffffffff"], coversUpToId: "raw-1" }]]);
+		expect(mockAgents.runDropper).toHaveBeenCalledWith(expect.objectContaining({ reflections: [old] }));
+	});
+
+	it("does not run the reflector without force when its clock is not due", async () => {
+		const { pi, runtime, ctx } = setup({ entries: reviewEntries(), observeAfterTokens: 999, reflectAfterTokens: 999 });
+
+		await runConsolidationPipeline(pi as any, runtime as any, ctx as any);
+
+		expect(mockAgents.runReflector).not.toHaveBeenCalled();
+		expect(mockAgents.runReflectionReview).not.toHaveBeenCalled();
 	});
 });

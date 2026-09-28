@@ -35,6 +35,8 @@ interface RunReflectorArgs {
 	headers?: Record<string, string>;
 	env?: Record<string, string>;
 	reflections: Reflection[];
+	/** Every recorded reflection id, including retired ones, so a retired reflection is never proposed again. */
+	knownReflectionIds?: ReadonlySet<string>;
 	observations: Observation[];
 	signal?: AbortSignal;
 	agentLoop?: typeof agentLoop;
@@ -131,7 +133,7 @@ export async function runReflector(args: RunReflectorArgs): Promise<Reflection[]
 	});
 
 	const allowedObservationIds = observations.map((observation) => observation.id);
-	const existingReflectionIds = new Set(reflections.map((reflection) => reflection.id));
+	const existingReflectionIds = new Set([...reflections.map((reflection) => reflection.id), ...(args.knownReflectionIds ?? [])]);
 	const accumulated = new Map<string, Reflection>();
 	let toolCallCount = 0;
 	let rawProposedReflectionCount = 0;

@@ -3,6 +3,7 @@ import { runDropper } from "../agents/dropper/agent.js";
 import { observationPoolMetrics } from "../agents/dropper/pool.js";
 import { ObserverStreamError, runObserver } from "../agents/observer/agent.js";
 import { runReflector } from "../agents/reflector/agent.js";
+import { runReflectionReview } from "../agents/reviewer/agent.js";
 import { debugLog, withDebugLogContext } from "../debug-log.js";
 import { resolveObserverChunkMaxTokens } from "../config.js";
 import type { ConsolidationPhase, ResolveCtx, ResolveResult, Runtime } from "../runtime.js";
@@ -10,9 +11,11 @@ import { serializeSourceAddressedBranchEntries } from "../serialize.js";
 import {
 	OM_OBSERVATIONS_DROPPED,
 	OM_OBSERVATIONS_RECORDED,
+	OM_REFLECTIONS_DROPPED,
 	OM_REFLECTIONS_RECORDED,
 	buildObservationsDroppedData,
 	buildObservationsRecordedData,
+	buildReflectionsDroppedData,
 	buildReflectionsRecordedData,
 	earlierCoverageMarkerId,
 	foldLedger,
@@ -22,6 +25,7 @@ import {
 	latestCoverageMarkerId,
 	observationToSummaryLine,
 	realTokensSinceAnchor,
+	reflectionRecordTimestamps,
 	rawTokensSinceObservationCoverage,
 	rawTokensSinceReflectionCoverage,
 	reflectionToSummaryLine,
@@ -49,11 +53,30 @@ type ConsolidationCtx = {
 
 type StageOutcome = "continue" | "abort";
 
+export type ConsolidationOptions = {
+	/** Run the reflector regardless of its token clock, and review reflections even when it records nothing new. */
+	forceReflection?: boolean;
+};
+
 type ReflectorStageResult = {
 	outcome: StageOutcome;
+	/** Reflections recorded this run: crystallized ones and review replacements. */
 	sameRunReflections: Reflection[];
+	/** Set when crystallize or review recorded anything; the dropper runs only then. */
 	effectiveReflectionCoverageId?: string;
 };
+
+function pad(n: number): string {
+	return n.toString().padStart(2, "0");
+}
+
+/** Local "YYYY-MM-DD HH:MM", the same shape as observation timestamps. */
+function formatRecordedAt(timestamp: string | undefined): string | undefined {
+	if (!timestamp) return undefined;
+	const d = new Date(timestamp);
+	if (Number.isNaN(d.getTime())) return undefined;
+	return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
 
 function sourceEntriesAfter(entries: Entry[], index: number): Entry[] {
 	return entries.slice(index + 1).filter(isSourceEntry);
@@ -340,6 +363,7 @@ export async function runConsolidationPipeline(
 	pi: ExtensionAPI,
 	runtime: Runtime,
 	ctx: ConsolidationCtx,
+	options: ConsolidationOptions = {},
 ): Promise<void> {
 	const resolver = makeModelResolver(runtime, ctx);
 
@@ -355,7 +379,7 @@ export async function runConsolidationPipeline(
 	runtime.consolidationPhase = "reflector";
 	let reflectorResult: ReflectorStageResult;
 	try {
-		reflectorResult = await runReflectorStage(pi, runtime, ctx, resolver);
+		reflectorResult = await runReflectorStage(pi, runtime, ctx, resolver, options);
 		if (reflectorResult.outcome === "abort") return;
 	} catch (error) {
 		debugLog("reflector.error", { errorMessage: runtime.recordConsolidationStageError(ctx, "reflector", error) });
@@ -517,12 +541,13 @@ async function runReflectorStage(
 	runtime: Runtime,
 	ctx: ConsolidationCtx,
 	resolver: ModelResolver,
+	options: ConsolidationOptions,
 ): Promise<ReflectorStageResult> {
 	const entries = ctx.sessionManager.getBranch() as Entry[];
 	const currentTokens = realContextTokens(ctx);
 	const real = currentTokens !== undefined ? realTokensSinceAnchor(entries, OM_REFLECTIONS_RECORDED, currentTokens) : undefined;
 	const reflectionTokens = real !== undefined ? real : rawTokensSinceReflectionCoverage(entries); // fallback: no usage baseline / basis change
-	if (reflectionTokens < runtime.config.reflectAfterTokens) return { outcome: "continue", sameRunReflections: [] };
+	if (!options.forceReflection && reflectionTokens < runtime.config.reflectAfterTokens) return { outcome: "continue", sameRunReflections: [] };
 
 	const observationCoverageId = latestCoverageMarkerId(entries, OM_OBSERVATIONS_RECORDED);
 	if (!observationCoverageId) return { outcome: "continue", sameRunReflections: [] };
@@ -541,22 +566,117 @@ async function runReflectorStage(
 		headers: worker.headers,
 		env: worker.env,
 		reflections: folded.activeReflections,
+		knownReflectionIds: new Set(folded.reflectionsById.keys()),
 		observations: folded.activeObservations,
 		maxTurns: runtime.config.agentMaxTurns,
 		maxOutputTokens: runtime.config.agentMaxTokens,
 		thinkingLevel: workerThinkingLevel(runtime, worker),
 		modelRegistry: ctx.modelRegistry,
 	}));
-	if (!reflections) return { outcome: "continue", sameRunReflections: [] };
+	const sameRunReflections: Reflection[] = [];
+	const data = reflections ? buildReflectionsRecordedData(reflections, observationCoverageId) : undefined;
+	if (data) {
+		appendEntry(pi, OM_REFLECTIONS_RECORDED, data);
+		sameRunReflections.push(...data.reflections);
+	}
 
-	const data = buildReflectionsRecordedData(reflections, observationCoverageId);
-	if (!data) return { outcome: "continue", sameRunReflections: [] };
-	appendEntry(pi, OM_REFLECTIONS_RECORDED, data);
+	let reviewRecorded = false;
+	if (data || options.forceReflection) {
+		const replacements = await runReviewStep(pi, runtime, ctx, resolver, observationCoverageId, new Set(sameRunReflections.map((reflection) => reflection.id)));
+		if (replacements) {
+			reviewRecorded = true;
+			sameRunReflections.push(...replacements);
+		}
+	}
+
 	return {
 		outcome: "continue",
-		sameRunReflections: reflections,
-		effectiveReflectionCoverageId: data.coversUpToId,
+		sameRunReflections,
+		effectiveReflectionCoverageId: data || reviewRecorded ? observationCoverageId : undefined,
 	};
+}
+
+/**
+ * Review active reflections after crystallize: retire stale ones and replace verbose or overlapping ones.
+ * Runs on the reflector's model with its fallback retry. A failure is recorded as a reflector error but keeps
+ * crystallize's output. Returns the recorded replacements when the review wrote anything, else undefined.
+ */
+async function runReviewStep(
+	pi: ExtensionAPI,
+	runtime: Runtime,
+	ctx: ConsolidationCtx,
+	resolver: ModelResolver,
+	coversUpToId: string,
+	newReflectionIds: ReadonlySet<string>,
+): Promise<Reflection[] | undefined> {
+	const entries = ctx.sessionManager.getBranch() as Entry[];
+	const folded = foldLedger(entries);
+	if (folded.activeReflections.length === 0) return undefined;
+	const resolved = await resolver.resolve("reflector");
+	if (!resolved) return undefined;
+
+	const recordedAt = new Map<string, string>();
+	for (const [id, timestamp] of reflectionRecordTimestamps(entries)) {
+		const formatted = formatRecordedAt(timestamp);
+		if (formatted) recordedAt.set(id, formatted);
+	}
+	const reflectionCount = folded.activeReflections.length;
+	if (shouldNotifyWorker(runtime, ctx)) ctx.ui?.notify(
+		`Observational memory: reflection review running over ${reflectionCount} reflection${reflectionCount === 1 ? "" : "s"}`,
+		"info",
+	);
+	debugLog("reflector.review_start", {
+		reflectionCount,
+		newReflectionCount: newReflectionIds.size,
+		observationCount: folded.activeObservations.length,
+	});
+	const startedAt = Date.now();
+
+	let result: Awaited<ReturnType<typeof runReflectionReview>>;
+	try {
+		result = await runStageWithFallback(ctx, "reflector", resolved, resolver, (worker) => runReflectionReview({
+			model: worker.model as any,
+			apiKey: worker.apiKey,
+			headers: worker.headers,
+			env: worker.env,
+			reflections: folded.activeReflections,
+			newReflectionIds,
+			retiredReflectionIds: folded.retiredReflectionIds,
+			recordedAt,
+			observations: folded.activeObservations,
+			maxTurns: runtime.config.agentMaxTurns,
+			maxOutputTokens: runtime.config.agentMaxTokens,
+			thinkingLevel: workerThinkingLevel(runtime, worker),
+			modelRegistry: ctx.modelRegistry,
+		}));
+	} catch (error) {
+		debugLog("reflector.review_error", {
+			errorMessage: runtime.recordConsolidationStageError(ctx, "reflector", error),
+			elapsedMs: Date.now() - startedAt,
+		});
+		return undefined;
+	}
+
+	let wrote = false;
+	const replacementData = result ? buildReflectionsRecordedData(result.replacements, coversUpToId) : undefined;
+	if (replacementData) {
+		appendEntry(pi, OM_REFLECTIONS_RECORDED, replacementData);
+		wrote = true;
+	}
+	for (const retirement of result?.retirements ?? []) {
+		const data = buildReflectionsDroppedData(retirement.reflectionIds, coversUpToId, retirement.replacedBy);
+		if (!data) continue;
+		appendEntry(pi, OM_REFLECTIONS_DROPPED, data);
+		wrote = true;
+	}
+	debugLog("reflector.review_done", {
+		replacementCount: result?.replacements.length ?? 0,
+		retiredCount: result?.retirements.reduce((sum, retirement) => sum + retirement.reflectionIds.length, 0) ?? 0,
+		retirementEntryCount: result?.retirements.length ?? 0,
+		coversUpToId,
+		elapsedMs: Date.now() - startedAt,
+	});
+	return wrote ? result!.replacements : undefined;
 }
 
 async function runDropperStage(
@@ -567,7 +687,7 @@ async function runDropperStage(
 	sameRunReflections: Reflection[],
 	sameRunReflectionCoverageId: string | undefined,
 ): Promise<StageOutcome> {
-	if (!sameRunReflectionCoverageId || sameRunReflections.length === 0) {
+	if (!sameRunReflectionCoverageId) {
 		debugLog("dropper.waiting_for_reflection", { sameRunReflections: sameRunReflections.length });
 		return "continue";
 	}

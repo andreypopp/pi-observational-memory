@@ -272,6 +272,22 @@ describe("V3 reflector agent", () => {
 		expect(result?.map((item) => item.content)).toEqual(["New durable fact."]);
 	});
 
+	it("skips proposals matching known reflection ids that are not in the prompt, such as retired reflections", async () => {
+		const retiredContent = "Retired durable fact.";
+		const loop = fakeAgentLoop(async (_prompts, context) => {
+			await context.tools[0].execute("tool-1", {
+				reflections: [
+					{ content: retiredContent, supportingObservationIds: ["aaaaaaaaaaaa"] },
+					{ content: "Fresh durable fact.", supportingObservationIds: ["aaaaaaaaaaaa"] },
+				],
+			});
+		});
+
+		const result = await runReflector({ ...baseArgs, knownReflectionIds: new Set([hashId(retiredContent)]), agentLoop: loop });
+
+		expect(result?.map((item) => item.content)).toEqual(["Fresh durable fact."]);
+	});
+
 	it("returns undefined when no tool call records reflections", async () => {
 		const loop = fakeAgentLoop(() => {});
 		await expect(runReflector({ ...baseArgs, agentLoop: loop })).resolves.toBeUndefined();
