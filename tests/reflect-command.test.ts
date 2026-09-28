@@ -88,15 +88,40 @@ describe("/om:reflect", () => {
 		}
 	});
 
-	it("reports nothing to compact when Pi rejects before the hook runs", async () => {
-		const { run, ctx, runtime, compactCalls } = setup();
+	it.each(["Nothing to compact (session too small)", "Already compacted"])(
+		"still runs the pass without a cut when Pi rejects with %j",
+		async (message) => {
+			let releasePass!: () => void;
+			const launchConsolidationTask = vi.fn(() => new Promise<void>((resolve) => { releasePass = resolve; }));
+			const { run, ctx, runtime, compactCalls } = setup({ launchConsolidationTask });
+
+			await run();
+			const done = compactCalls[0].onError(new Error(message));
+
+			expect(launchConsolidationTask).toHaveBeenCalledTimes(1);
+			expect(runtime.reflectRequest).toBeUndefined();
+			expect(runtime.compactInFlight).toBe(true);
+			releasePass();
+			await done;
+
+			expect(runtime.compactInFlight).toBe(false);
+			const report = ctx.ui.notify.mock.lastCall![0] as string;
+			expect(report).toContain("reflection pass complete");
+			expect(report).toContain("Pi had nothing to compact yet");
+		},
+	);
+
+	it("reports other rejections before the hook runs as failures without running the pass", async () => {
+		const launchConsolidationTask = vi.fn(async () => undefined);
+		const { run, ctx, runtime, compactCalls } = setup({ launchConsolidationTask });
 
 		await run();
-		compactCalls[0].onError(new Error("Nothing to compact (session too small)"));
+		await compactCalls[0].onError(new Error("No model selected"));
 
+		expect(launchConsolidationTask).not.toHaveBeenCalled();
 		expect(runtime.reflectRequest).toBeUndefined();
 		expect(runtime.compactInFlight).toBe(false);
-		expect(ctx.ui.notify).toHaveBeenLastCalledWith(expect.stringContaining("nothing to compact yet"), "info");
+		expect(ctx.ui.notify).toHaveBeenLastCalledWith(expect.stringContaining("/om:reflect failed: No model selected"), "error");
 	});
 
 	it("reports a failure after the forced pass started", async () => {

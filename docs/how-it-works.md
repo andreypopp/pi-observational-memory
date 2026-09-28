@@ -340,7 +340,7 @@ Forces a memory pass and a full-fold compaction, so cleanup shows up in the agen
    - Every entry the pass writes caps its `coversUpToId` at the cut, `earlierCoverageMarkerId(normal marker, firstKeptEntryId)`. The pass therefore lands in this fold, even when an earlier observer run covered entries past the cut.
    - The dropper still runs only when the active pool is over `observationsPoolTargetTokens`, because its drop budget is zero otherwise.
 3. The hook re-reads the live branch and builds the compaction projection with `forceFullFold`. Worker failures are recorded as usual, and the fold still happens. An empty projection still delegates to Pi's native summarizer.
-4. `onComplete` reports observations recorded and dropped, reflections added, replaced, and retired, and summary sizes before (latest visible memory) and after. If Pi rejects before the hook runs ("Nothing to compact", "Already compacted"), the command reports that there is nothing to compact yet. Both paths clear the request and `compactInFlight`.
+4. `onComplete` reports observations recorded and dropped, reflections added, replaced, and retired, and summary sizes before (latest visible memory) and after. If Pi rejects before the hook runs because there is nothing to compact ("Nothing to compact", "Already compacted"), `onError` runs the same forced pass without a cut or abort signal (coverage uncapped, like a normal pass, still holding `compactInFlight`) and reports its counts; the new memory reaches the agent at a later compaction. Any other rejection is reported as a failure. Every path clears the request and `compactInFlight`.
 
 ### `/om:promote`
 

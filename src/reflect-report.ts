@@ -22,6 +22,8 @@ export type MemorySize = {
 export type ReflectReport = ConsolidationReport & {
 	/** Set by the compaction hook when it consumed the request and started the forced pass. */
 	started: boolean;
+	/** Set when Pi had nothing to compact, so the pass ran without a fold. */
+	uncompacted?: true;
 	/** Summary size before (latest visible projection) and after (this full fold). */
 	before?: MemorySize;
 	after?: MemorySize;
@@ -70,6 +72,8 @@ export function renderReflectReport(report: ReflectReport): string {
 			sizeLine("Summary reflections", before.reflections, after.reflections, before.reflectionTokens, after.reflectionTokens),
 			sizeLine("Summary observations", before.observations, after.observations, before.observationTokens, after.observationTokens),
 		);
+	} else if (report.uncompacted) {
+		lines.push("Pi had nothing to compact yet; the agent sees this memory after a later compaction.");
 	} else if (before) {
 		lines.push("Memory is empty; Pi's native summary was used.");
 	}

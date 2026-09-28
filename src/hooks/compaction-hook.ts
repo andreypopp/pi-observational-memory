@@ -20,15 +20,16 @@ function observationsPoolMaxTokens(runtime: Runtime): number {
 }
 
 /**
- * The /om:reflect pass: run every memory worker now, under the consolidation lock, with everything it writes
- * capped at the compaction cut so it lands in this fold. Worker failures are recorded by the pipeline.
+ * The /om:reflect pass: run every memory worker now, under the consolidation lock. Inside a compaction,
+ * everything it writes is capped at the cut so it lands in this fold; without one (Pi had nothing to
+ * compact) it runs uncapped, like a normal pass. Worker failures are recorded by the pipeline.
  */
-async function runReflectPass(
+export async function runReflectPass(
 	pi: ExtensionAPI,
 	runtime: Runtime,
 	ctx: ExtensionContext,
-	event: SessionBeforeCompactEvent,
 	request: ReflectRequest,
+	cut?: { firstKeptEntryId: string; signal: AbortSignal },
 ): Promise<void> {
 	request.report.started = true;
 	request.report.before = memorySize(visibleProjection(ctx.sessionManager.getBranch() as Entry[]));
@@ -42,12 +43,12 @@ async function runReflectPass(
 	};
 	await withDebugLogContext(debugContext, async () => {
 		const startedAt = Date.now();
-		debugLog("reflect.pass_start", { firstKeptEntryId: event.preparation.firstKeptEntryId });
+		debugLog("reflect.pass_start", { firstKeptEntryId: cut?.firstKeptEntryId });
 		await runtime.launchConsolidationTask(ctx, () => runConsolidationPipeline(pi, runtime, ctx, {
 			forceObservation: true,
 			forceReflection: true,
-			coverageLimitId: event.preparation.firstKeptEntryId,
-			signal: event.signal,
+			coverageLimitId: cut?.firstKeptEntryId,
+			signal: cut?.signal,
 			report: request.report,
 		}));
 		debugLog("reflect.pass_done", { ...request.report, elapsedMs: Date.now() - startedAt });
@@ -74,7 +75,7 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 			// Consume the one-shot /om:reflect request before any await so no later compaction repeats it.
 			const reflectRequest = runtime.reflectRequest;
 			runtime.reflectRequest = undefined;
-			if (reflectRequest) await runReflectPass(pi, runtime, ctx, event, reflectRequest);
+			if (reflectRequest) await runReflectPass(pi, runtime, ctx, reflectRequest, { firstKeptEntryId, signal: event.signal });
 			// The forced pass appended ledger entries, so fold the live branch rather than the event snapshot.
 			const entries = (reflectRequest ? ctx.sessionManager.getBranch() : branchEntries) as Entry[];
 			const projection = buildCompactionProjection(
