@@ -4,6 +4,7 @@ import { Type } from "@earendil-works/pi-ai";
 import type { Static } from "typebox";
 import { hashId } from "../../ids.js";
 import { logAgentStreamError } from "../stream-errors.js";
+import { workerMessages } from "../worker-prompt.js";
 import { resolveWorkerStreamSimple, type StreamableModelRegistry, type WorkerStreamSimple } from "../worker-stream.js";
 import { AGENT_LOOP_MAX_TOKENS, boundedMaxTokens } from "../../model-budget.js";
 import { OBSERVER_SYSTEM } from "./prompts.js";
@@ -176,16 +177,10 @@ Compress the following new conversation chunk into observations by calling recor
 NEW CONVERSATION CHUNK:
 ${conversation}`;
 
-	const prompts: Message[] = [
-		{
-			role: "user",
-			content: [{ type: "text", text: userText }],
-			timestamp: Date.now(),
-		},
-	];
+	const { system, prompts } = workerMessages(model, OBSERVER_SYSTEM, userText);
 
 	const context: AgentContext = {
-		messages: [{ role: "system", content: OBSERVER_SYSTEM, timestamp: Date.now() }],
+		messages: system,
 		tools: [recordObservations as AgentTool<any>],
 	};
 

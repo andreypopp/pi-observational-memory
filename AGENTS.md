@@ -29,6 +29,15 @@ single place that applies Pi's auth acceptance rule — both the primary and fal
 it. Do not make the fallback mandatory: with none configured, the previous skip/fail-safe behavior
 must be byte-for-byte unchanged (covered by `tests/runtime.test.ts` and `tests/consolidation-trigger.test.ts`).
 
+## Worker instructions on claude-bridge models
+
+Pi 0.87's agent loop reads the system prompt only from leading `role: "system"` transcript messages;
+`AgentContext.systemPrompt` is ignored. pi-claude-bridge, however, never forwards a system prompt it did
+not record from `before_agent_start`: it fails the call instead. So `src/agents/worker-prompt.ts`
+`workerMessages` sends worker instructions as a system message, except on claude-bridge models
+(`model.baseUrl === "claude-bridge"`), where they open the user message. All three workers build their
+opening messages through it; covered by `tests/worker-prompt.test.ts`.
+
 ## Maintaining this file
 
 Keep this file for knowledge useful to almost every future agent session in this project.
