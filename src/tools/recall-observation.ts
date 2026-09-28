@@ -540,7 +540,7 @@ export const recallObservationTool = defineTool({
 	label: "Recall memory evidence",
 	description:
 		"Recover exact evidence and source context behind a compacted observational-memory observation or reflection id on the current branch. " +
-		"Ids from the promoted-memory block of the project's AGENTS.md work too. " +
+		"Ids from the project's .memory.md (promoted memory) work too. " +
 		"Use when compressed memory is important and original source context is needed before acting.",
 	promptSnippet: "Use recall(<id>) to recover exact source context behind compacted memory observations/reflections when precision matters.",
 	promptGuidelines: [
@@ -554,7 +554,7 @@ export const recallObservationTool = defineTool({
 	parameters: Type.Object({
 		id: Type.String({
 			pattern: "^[a-f0-9]{12}$",
-			description: "12-character lowercase hex observation or reflection id shown in compacted memory, /om:view, the promoted block of AGENTS.md, or a previous recall result. Must be a specific id; this tool does not search by topic.",
+			description: "12-character lowercase hex observation or reflection id shown in compacted memory, /om:view, the project's .memory.md, or a previous recall result. Must be a specific id; this tool does not search by topic.",
 		}),
 	}),
 	renderCall(args) {

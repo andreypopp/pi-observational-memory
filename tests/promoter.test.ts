@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { runPromoter, validatePromotedBlock } from "../src/agents/promoter/agent.js";
 import { hashId } from "../src/ids.js";
-import { blockTokens, renderBlockLine, type BlockLine } from "../src/project-memory/block.js";
+import { blockTokens, renderBlockLine, type BlockLine } from "../src/project-memory/memory-file.js";
 import { reflection } from "./fixtures/session.js";
 
 function fakeAgentLoop(handler: (prompts: any[], context: any) => Promise<void> | void, events: any[] = []): any {

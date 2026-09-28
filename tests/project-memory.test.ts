@@ -4,16 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { hashId } from "../src/ids.js";
-import {
-	BlockMarkerError,
-	blockTokens,
-	parseContextFile,
-	PROMOTED_END,
-	PROMOTED_START,
-	renderBlock,
-	renderBlockLine,
-	replaceBlock,
-} from "../src/project-memory/block.js";
+import { blockTokens, parsePromotedMemory, renderBlockLine, renderPromotedMemory } from "../src/project-memory/memory-file.js";
 import { memoryClosure } from "../src/project-memory/closure.js";
 import { findSessionFile, readSessionEntries } from "../src/project-memory/sessions.js";
 import {
@@ -46,76 +37,53 @@ const OBS_CONTENT = "User said: never use -L\nfor throwaway servers.";
 const OBS_ID = hashId(OBS_CONTENT);
 const SESSION = "01a0bfcf-d4de-739b-b7dd-5feda3a16ab8";
 
-describe("managed block", () => {
-	it("appends a block after a blank line when markers are absent, and round-trips", () => {
+describe(".memory.md", () => {
+	it("renders a fixed header and one line each, and round-trips", () => {
 		const lines = [renderBlockLine(REF_ID, REF_CONTENT)];
-		const next = replaceBlock("# Project\n\nRules.\n", lines);
+		const content = renderPromotedMemory(lines);
 
-		expect(next).toBe(`# Project\n\nRules.\n\n${renderBlock(lines)}\n`);
-		const parsed = parseContextFile(next);
-		expect(parsed.hasBlock).toBe(true);
-		expect(parsed.lines).toEqual([{ id: REF_ID, content: REF_CONTENT, raw: lines[0], hasId: true }]);
-		expect(parsed.outside).toBe("# Project\n\nRules.\n\n\n");
+		expect(content).toBe(`# Promoted memory\n\nDurable facts promoted from observational memory. \`recall <id>\` shows the evidence behind a line.\n\n${lines[0]}\n`);
+		expect(parsePromotedMemory(content)).toEqual({ lines: [{ id: REF_ID, content: REF_CONTENT, raw: lines[0], hasId: true }], dropped: [] });
 	});
 
-	it("creates a file body for empty content and adds the missing newline before appending", () => {
-		expect(replaceBlock("", [])).toBe(`${renderBlock([])}\n`);
-		expect(replaceBlock("Rules.", [])).toBe(`Rules.\n\n${renderBlock([])}\n`);
-	});
+	it("keeps hand-edited lines: an id keeps its edited text, a `- ` line without id gets a content hash", () => {
+		const content = `\uFEFF# Promoted memory\r\n- [${REF_ID}] edited by hand  \r\n- Written without an id\r\n\r\n`;
 
-	it("rewrites only the text between the markers, keeping BOM and CRLF", () => {
-		const content = `\uFEFF# Title\r\n\r\n${PROMOTED_START}\r\n## Promoted memory\r\n- [${REF_ID}] old\r\n${PROMOTED_END}\r\nAfter.\r\n`;
-		const next = replaceBlock(content, ["- [aaaaaaaaaaaa] new"]);
-
-		expect(next.startsWith("\uFEFF# Title\r\n\r\n")).toBe(true);
-		expect(next.endsWith(`${PROMOTED_END}\r\nAfter.\r\n`)).toBe(true);
-		expect(next).toContain("\r\n- [aaaaaaaaaaaa] new\r\n");
-		expect(next).not.toContain("old");
-	});
-
-	it("keeps hand-edited lines: an id keeps its edited text, a line without id gets a content hash", () => {
-		const content = `${PROMOTED_START}\n## Promoted memory\n- [${REF_ID}] edited by hand  \n- Written without an id\n\n${PROMOTED_END}\n`;
-		const parsed = parseContextFile(content);
-
-		expect(parsed.lines).toEqual([
+		expect(parsePromotedMemory(content).lines).toEqual([
 			{ id: REF_ID, content: "edited by hand", raw: `- [${REF_ID}] edited by hand`, hasId: true },
 			{ id: hashId("Written without an id"), content: "Written without an id", raw: "- Written without an id", hasId: false },
 		]);
 	});
 
-	it("refuses unbalanced markers", () => {
-		expect(() => parseContextFile(`${PROMOTED_START}\n- x\n`)).toThrow(BlockMarkerError);
-		expect(() => parseContextFile(`${PROMOTED_END}\n${PROMOTED_START}\n`)).toThrow(BlockMarkerError);
-		expect(() => replaceBlock(`${PROMOTED_START}\n${PROMOTED_END}\n${PROMOTED_START}\n`, [])).toThrow(BlockMarkerError);
+	it("reports any other text as dropped", () => {
+		const parsed = parsePromotedMemory(`# Promoted memory\n\n## Notes\nA paragraph.\n* star bullet\n- [${REF_ID}] kept\n`);
+
+		expect(parsed.lines.map((line) => line.id)).toEqual([REF_ID]);
+		expect(parsed.dropped).toEqual(["## Notes", "A paragraph.", "* star bullet"]);
 	});
 
-	it("counts the whole rendered block in the token estimate", () => {
-		expect(blockTokens([])).toBe(Math.ceil(renderBlock([]).length / 4));
+	it("counts the whole rendered file in the token estimate", () => {
+		expect(blockTokens([])).toBe(Math.ceil(renderPromotedMemory([]).length / 4));
 	});
 });
 
 describe("promote target", () => {
-	it("uses the repository root and Pi's candidate order", () => {
+	it("uses .memory.md at the repository root, whatever context files exist", () => {
 		const root = tempDir();
 		mkdirSync(join(root, ".git"));
 		writeFileSync(join(root, ".git", "HEAD"), "ref: refs/heads/main\n");
 		mkdirSync(join(root, "pkg", "sub"), { recursive: true });
-		writeFileSync(join(root, "CLAUDE.md"), "claude");
+		writeFileSync(join(root, "AGENTS.md"), "agents");
 		expect(resolvePromoteTarget(join(root, "pkg", "sub"))).toEqual({
 			root,
-			contextPath: join(root, "CLAUDE.md"),
-			contextExists: true,
+			memoryPath: join(root, ".memory.md"),
 			memoryDir: join(root, ".memory"),
 		});
-		writeFileSync(join(root, "AGENTS.md"), "agents");
-		expect(resolvePromoteTarget(root).contextPath).toBe(join(root, "AGENTS.md"));
-		writeFileSync(join(root, "AGENTS.override.md"), "override");
-		expect(resolvePromoteTarget(root).contextPath).toBe(join(root, "AGENTS.override.md"));
 	});
 
-	it("creates AGENTS.md at the root when no context file exists, and uses cwd outside git", () => {
+	it("uses cwd outside git", () => {
 		const dir = tempDir();
-		expect(resolvePromoteTarget(dir)).toEqual({ root: dir, contextPath: join(dir, "AGENTS.md"), contextExists: false, memoryDir: join(dir, ".memory") });
+		expect(resolvePromoteTarget(dir)).toEqual({ root: dir, memoryPath: join(dir, ".memory.md"), memoryDir: join(dir, ".memory") });
 	});
 
 	it("targets the main worktree from a linked worktree", () => {
@@ -128,12 +96,11 @@ describe("promote target", () => {
 		writeFileSync(join(main, ".git", "worktrees", "feature", "commondir"), "../..\n");
 		mkdirSync(linked);
 		writeFileSync(join(linked, ".git"), `gitdir: ${join(main, ".git", "worktrees", "feature")}\n`);
-		writeFileSync(join(linked, "AGENTS.md"), "worktree copy");
+		writeFileSync(join(linked, ".memory.md"), "worktree copy");
 
 		expect(resolvePromoteTarget(linked)).toEqual({
 			root: main,
-			contextPath: join(main, "AGENTS.md"),
-			contextExists: false,
+			memoryPath: join(main, ".memory.md"),
 			memoryDir: join(main, ".memory"),
 			linkedWorktreeRoot: linked,
 		});

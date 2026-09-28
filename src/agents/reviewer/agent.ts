@@ -213,7 +213,7 @@ export async function runReflectionReview(args: RunReflectionReviewArgs): Promis
 	const userText = grounding
 		? withProjectContext(
 			args.projectContext,
-			`${reflectionsText}\n\n${basename(grounding.contextPath)} PROMOTED LINES (${grounding.contextPath}):\n${joinOrEmpty(grounding.blockLines.map((line) => `[${line.id}] ${line.content}`))}\n\n${observationsText}\n\nREPOSITORY: ${grounding.root}\n\nCheck the reflections and promoted lines against the repository, then record decisions. If nothing needs to change, do not call tidy_reflections or revise_promoted_block.`,
+			`${reflectionsText}\n\n${basename(grounding.memoryPath)} PROMOTED LINES (${grounding.memoryPath}):\n${joinOrEmpty(grounding.blockLines.map((line) => `[${line.id}] ${line.content}`))}\n\n${observationsText}\n\nREPOSITORY: ${grounding.root}\n\nCheck the reflections and promoted lines against the repository, then record decisions. If nothing needs to change, do not call tidy_reflections or revise_promoted_block.`,
 		)
 		: withProjectContext(args.projectContext, `${reflectionsText}\n\n${observationsText}\n\nReview the reflections. If none needs to change, do not call the tool.`);
 	const { system, prompts } = workerMessages(model, grounding ? `${REVIEW_SYSTEM}\n\n${GROUNDING_SYSTEM}` : REVIEW_SYSTEM, userText);

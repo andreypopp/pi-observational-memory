@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -19,7 +19,7 @@ vi.mock("../src/agents/promoter/agent.js", async (importOriginal) => {
 import { registerPromoteCommand } from "../src/commands/promote.js";
 import { resolveProjectContextFiles } from "../src/hooks/project-context.js";
 import { hashId } from "../src/ids.js";
-import { PROMOTED_END, PROMOTED_START, renderBlock, renderBlockLine } from "../src/project-memory/block.js";
+import { renderBlockLine, renderPromotedMemory } from "../src/project-memory/memory-file.js";
 import { parseMemoryFile } from "../src/project-memory/store.js";
 import { Runtime } from "../src/runtime.js";
 import { foldLedger } from "../src/session-ledger/index.js";
@@ -117,6 +117,8 @@ function setup(options: { hasUI?: boolean; confirm?: () => Promise<boolean> | bo
 }
 
 const agentsPath = () => join(root, "AGENTS.md");
+const memoryPath = () => join(root, ".memory.md");
+const agentsUntouched = () => expect(readFileSync(agentsPath(), "utf8")).toBe("# Project\n\nHand-written rules.\n");
 const memoryFiles = () => {
 	try {
 		return readdirSync(join(root, ".memory")).sort();
@@ -136,7 +138,8 @@ describe("/om:promote", () => {
 			expect(output).toContain("/om:promote preview");
 			expect(output).toContain(`+ ${renderBlockLine(A.id, "Fact A")}`);
 			expect(output).toContain("needs an interactive session");
-			expect(readFileSync(agentsPath(), "utf8")).toBe("# Project\n\nHand-written rules.\n");
+			expect(existsSync(memoryPath())).toBe(false);
+			agentsUntouched();
 			expect(memoryFiles()).toEqual([]);
 			expect(session.appended).toEqual([]);
 		} finally {
@@ -144,15 +147,17 @@ describe("/om:promote", () => {
 		}
 	});
 
-	it("writes .memory files, the block and the ledger after confirmation", async () => {
+	it("writes .memory files, .memory.md and the ledger after confirmation, leaving AGENTS.md alone", async () => {
 		const { run, ctx, session, runtime } = setup();
 		await run();
 
 		const mergedId = hashId(MERGED);
 		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("/om:promote preview"), "info");
-		expect(ctx.ui.confirm).toHaveBeenCalledWith("Promote memory?", expect.stringContaining("AGENTS.md: +2 / =0 / -0 lines"));
+		expect(ctx.ui.confirm).toHaveBeenCalledWith("Promote memory?", expect.stringContaining(".memory.md: +2 / =0 / -0 lines"));
+		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Target: .memory.md (new file)"), "info");
 		const expectedLines = [renderBlockLine(A.id, "Fact A"), renderBlockLine(mergedId, MERGED)];
-		expect(readFileSync(agentsPath(), "utf8")).toBe(`# Project\n\nHand-written rules.\n\n${renderBlock(expectedLines)}\n`);
+		expect(readFileSync(memoryPath(), "utf8")).toBe(renderPromotedMemory(expectedLines));
+		agentsUntouched();
 
 		// Promoted reflections, what they replace (transitively), and every supporting observation.
 		expect(memoryFiles()).toEqual([A.id, mergedId, B.id, OLD.id, "aaaaaaaaaaaa", "bbbbbbbbbbbb", "cccccccccccc"].map((id) => `${id}.md`).sort());
@@ -174,33 +179,36 @@ describe("/om:promote", () => {
 		expect(folded.reflectionRetirementKind.get(A.id)).toBe("promoted");
 		expect(folded.knownReflectionIds.has(A.id)).toBe(false);
 
-		// The reflector sees OM's content for the file until Pi reloads it.
-		expect(runtime.contextFileOverrides.get(agentsPath())).toContain(renderBlockLine(A.id, "Fact A"));
-		runtime.projectContext = { files: [{ path: agentsPath(), content: "stale" }], source: "snapshot" };
-		expect(resolveProjectContextFiles(runtime, root).files[0].content).toContain(PROMOTED_START);
-		expect(ctx.ui.notify).toHaveBeenLastCalledWith(expect.stringContaining("after /reload or in a new session"), "info");
+		// The reflector reads .memory.md fresh, after the snapshot's files.
+		runtime.projectContext = { files: [{ path: agentsPath(), content: "rules" }], source: "snapshot" };
+		expect(resolveProjectContextFiles(runtime, root).files).toEqual([
+			{ path: agentsPath(), content: "rules" },
+			{ path: memoryPath(), content: renderPromotedMemory(expectedLines).trimEnd() },
+		]);
+		expect(ctx.ui.notify).toHaveBeenLastCalledWith(expect.stringContaining("sees them from its next prompt"), "info");
+		expect(ctx.ui.notify).not.toHaveBeenLastCalledWith(expect.stringContaining("/reload"), "info");
 	});
 
 	it("writes nothing when the user cancels", async () => {
 		const { run, session, ctx } = setup({ confirm: () => false });
 		await run();
 
-		expect(readFileSync(agentsPath(), "utf8")).toBe("# Project\n\nHand-written rules.\n");
+		expect(existsSync(memoryPath())).toBe(false);
 		expect(memoryFiles()).toEqual([]);
 		expect(session.appended).toEqual([]);
 		expect(ctx.ui.notify).toHaveBeenLastCalledWith(expect.stringContaining("cancelled"), "info");
 	});
 
-	it("aborts without writing when the context file changed since the preview", async () => {
+	it("aborts without writing when .memory.md changed since the preview", async () => {
 		const { run, session, ctx } = setup({
 			confirm: () => {
-				writeFileSync(agentsPath(), "# Edited meanwhile\n");
+				writeFileSync(memoryPath(), "- Edited meanwhile\n");
 				return true;
 			},
 		});
 		await run();
 
-		expect(readFileSync(agentsPath(), "utf8")).toBe("# Edited meanwhile\n");
+		expect(readFileSync(memoryPath(), "utf8")).toBe("- Edited meanwhile\n");
 		expect(memoryFiles()).toEqual([]);
 		expect(session.appended).toEqual([]);
 		expect(ctx.ui.notify).toHaveBeenLastCalledWith(expect.stringContaining("changed on disk since the preview"), "warning");
@@ -245,17 +253,27 @@ describe("/om:promote", () => {
 		expect(waiting.runtime.promoteInFlight).toBe(false);
 	});
 
-	it("reports nothing to promote without reflections or block lines, and refuses broken markers", async () => {
+	it("reports nothing to promote without reflections or promoted lines", async () => {
 		const empty = setup({ entries: [textCustomMessage("raw-1", "x")] });
 		await empty.run();
 		expect(mocks.runPromoter).not.toHaveBeenCalled();
 		expect(empty.ctx.ui.notify).toHaveBeenLastCalledWith(expect.stringContaining("no active reflections"), "info");
+	});
 
-		writeFileSync(agentsPath(), `${PROMOTED_START}\n- x\n`);
-		const broken = setup();
-		await broken.run();
-		expect(mocks.runPromoter).not.toHaveBeenCalled();
-		expect(broken.ctx.ui.notify).toHaveBeenLastCalledWith(expect.stringContaining("unbalanced"), "error");
+	it("shows hand-written text it drops, keeps id-less `- ` lines, and gives the promoter the other context files", async () => {
+		writeFileSync(memoryPath(), "# Promoted memory\n\nA note by hand.\n- Written without an id\n");
+		mocks.params = { lines: [{ keepId: hashId("Written without an id") }, { content: "Fact A", fromIds: [A.id] }] };
+		const { run, ctx, runtime } = setup();
+		runtime.projectContext = { files: [{ path: agentsPath(), content: "rules" }], source: "snapshot" };
+		await run();
+
+		const promoterArgs = mocks.runPromoter.mock.calls[0][0];
+		expect(promoterArgs.blockLines.map((line: any) => line.content)).toEqual(["Written without an id"]);
+		expect(promoterArgs.projectContext).toContain("rules");
+		expect(promoterArgs.projectContext).not.toContain("Written without an id");
+		const preview = String(ctx.ui.notify.mock.calls.find((call: unknown[]) => String(call[0]).includes("preview"))![0]);
+		expect(preview).toContain("Other text in the file, not kept (only `- ` lines are):\n  A note by hand.");
+		expect(readFileSync(memoryPath(), "utf8")).toBe(renderPromotedMemory(["- Written without an id", renderBlockLine(A.id, "Fact A")]));
 	});
 
 	it("keeps and removes existing block lines, reading records only in .memory for rewrites", async () => {
@@ -267,10 +285,7 @@ describe("/om:promote", () => {
 		await later.run();
 
 		const reworded = hashId("Fact A, reworded");
-		const content = readFileSync(agentsPath(), "utf8");
-		expect(content).toContain(renderBlockLine(reworded, "Fact A, reworded"));
-		expect(content).not.toContain(renderBlockLine(A.id, "Fact A"));
-		expect(content.match(new RegExp(PROMOTED_END, "g"))).toHaveLength(1);
+		expect(readFileSync(memoryPath(), "utf8")).toBe(renderPromotedMemory([renderBlockLine(reworded, "Fact A, reworded")]));
 		expect(parseMemoryFile(readFileSync(join(root, ".memory", `${reworded}.md`), "utf8"))).toMatchObject({ replaces: [A.id], supportingObservationIds: ["aaaaaaaaaaaa"] });
 		expect(later.ctx.ui.confirm).toHaveBeenCalledWith("Promote memory?", expect.stringContaining("+1 / =0 / -2 lines"));
 		// The rewrite replaces A, so A and its evidence stay; the dropped merged line's chain goes.
@@ -294,8 +309,9 @@ describe("/om:promote", () => {
 		ctx.cwd = linked;
 		await run();
 
-		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining(`linked git worktree (${linked}); the block and .memory/ go to the main worktree at ${root}`), "info");
-		expect(readFileSync(agentsPath(), "utf8")).toContain(PROMOTED_START);
+		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining(`linked git worktree (${linked}); .memory.md and .memory/ go to the main worktree at ${root}`), "info");
+		expect(readFileSync(memoryPath(), "utf8")).toContain(renderBlockLine(A.id, "Fact A"));
+		agentsUntouched();
 		expect(readdirSync(linked)).toEqual([".git"]);
 	});
 
@@ -319,13 +335,13 @@ describe("/om:promote", () => {
 	it("keeps a hand-edited line's records by its id", async () => {
 		await setup().run();
 		const mergedId = hashId(MERGED);
-		writeFileSync(agentsPath(), readFileSync(agentsPath(), "utf8").replace("] Fact A", "] Fact A, edited by hand"));
+		writeFileSync(memoryPath(), readFileSync(memoryPath(), "utf8").replace("] Fact A", "] Fact A, edited by hand"));
 		mocks.params = { lines: [{ keepId: A.id }] };
 		const later = setup({ entries: [textCustomMessage("raw-2", "x")] });
 		await later.run();
 
-		expect(readFileSync(agentsPath(), "utf8")).toContain(`- [${A.id}] Fact A, edited by hand`);
-		expect(readFileSync(agentsPath(), "utf8")).not.toContain(mergedId);
+		expect(readFileSync(memoryPath(), "utf8")).toContain(`- [${A.id}] Fact A, edited by hand`);
+		expect(readFileSync(memoryPath(), "utf8")).not.toContain(mergedId);
 		expect(memoryFiles()).toEqual([A.id, "aaaaaaaaaaaa"].map((id) => `${id}.md`).sort());
 	});
 
@@ -338,19 +354,19 @@ describe("/om:promote", () => {
 		mkdirSync(join(dir, "ffffffffffff.md"));
 		writeFileSync(join(root, "outside.md"), "outside");
 		symlinkSync(join(root, "outside.md"), join(dir, "dddddddddddd.md"));
-		const content = readFileSync(agentsPath(), "utf8");
+		const content = readFileSync(memoryPath(), "utf8");
 		mocks.params = { lines: [{ keepId: A.id }, { keepId: hashId(MERGED) }] };
 		const later = setup({ entries: [textCustomMessage("raw-2", "x")] });
 		await later.run();
 
 		expect(later.ctx.ui.confirm).toHaveBeenCalledWith("Promote memory?", expect.stringContaining("+0 / -1 .memory files"));
-		expect(readFileSync(agentsPath(), "utf8")).toBe(content);
+		expect(readFileSync(memoryPath(), "utf8")).toBe(content);
 		expect(memoryFiles()).toEqual([...before, "README.md", "dddddddddddd.md", "ffffffffffff.md"].sort());
 		expect(readFileSync(join(root, "outside.md"), "utf8")).toBe("outside");
 		expect(later.ctx.ui.notify).toHaveBeenLastCalledWith(expect.stringContaining("removed 1 .memory file(s)"), "info");
 	});
 
-	it("removes every id file when all lines are dropped", async () => {
+	it("removes every id file and .memory.md when all lines are dropped", async () => {
 		await setup().run();
 		writeFileSync(join(root, ".memory", "README.md"), "readme");
 		mocks.params = { lines: [] };
@@ -360,6 +376,9 @@ describe("/om:promote", () => {
 		expect(later.ctx.ui.confirm).toHaveBeenCalledWith("Promote memory?", expect.stringContaining("+0 / =0 / -2 lines (~"));
 		expect(later.ctx.ui.confirm).toHaveBeenCalledWith("Promote memory?", expect.stringContaining("+0 / -7 .memory files"));
 		expect(memoryFiles()).toEqual(["README.md"]);
+		expect(existsSync(memoryPath())).toBe(false);
+		expect(later.ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Target: .memory.md (deleted: no lines remain)"), "info");
+		agentsUntouched();
 	});
 
 	it("has nothing to remove without a .memory directory", async () => {
@@ -372,7 +391,7 @@ describe("/om:promote", () => {
 
 	describe("status widget", () => {
 		const choosing = "show om-promote: ⠋ Promoting memory: choosing reflections… (2 active)";
-		const writing = "show om-promote: ⠋ Promoting memory: writing AGENTS.md and .memory/…";
+		const writing = "show om-promote: ⠋ Promoting memory: writing .memory.md and .memory/…";
 
 		it("spins during the model call and the apply, and is hidden for the confirm dialog", async () => {
 			const { run, events, loaders } = setup();
@@ -402,7 +421,7 @@ describe("/om:promote", () => {
 			expect(nothing.loaders.every((loader) => loader.stopped)).toBe(true);
 
 			mocks.params = { lines: [{ content: "Fact A", fromIds: [A.id] }] };
-			const stale = setup({ confirm: () => (writeFileSync(agentsPath(), "# Edited meanwhile\n"), true) });
+			const stale = setup({ confirm: () => (writeFileSync(memoryPath(), "# Edited meanwhile\n"), true) });
 			await stale.run();
 			expect(stale.events.slice(-3)).toEqual(["confirm", writing, "hide om-promote"]);
 		});

@@ -11,15 +11,14 @@ import {
 	workerThinkingLevel,
 	type ConsolidationCtx,
 } from "../hooks/consolidation-trigger.js";
-import { contextFilesWithoutBlock, resolveProjectContextFiles, stripBom } from "../hooks/project-context.js";
-import { BlockMarkerError, parseContextFile, type ParsedContextFile } from "../project-memory/block.js";
+import { contextFilesWithoutMemoryFile, resolveProjectContextFiles } from "../hooks/project-context.js";
+import { parsePromotedMemory, readPromotedMemory } from "../project-memory/memory-file.js";
 import {
 	applyPromotePlan,
 	blockLineRecords,
 	buildPromotePlan,
 	planChangesSomething,
 	promoteSummary,
-	readContextFile,
 	renderPromotePreview,
 	type PromotePlan,
 } from "../project-memory/promote.js";
@@ -60,15 +59,8 @@ export async function withConsolidationLock<T>(runtime: Runtime, notify: Notify,
 /** Ask the model for a new block and turn it into a plan. Undefined (after notifying) when there is nothing to do. */
 async function proposePromotion(runtime: Runtime, ctx: ExtensionCommandContext, notify: Notify, status: StatusWidget): Promise<PromotePlan | undefined> {
 	const target = resolvePromoteTarget(ctx.cwd);
-	const originalContent = readContextFile(target.contextPath);
-	let parsed: ParsedContextFile;
-	try {
-		parsed = parseContextFile(originalContent ?? "");
-	} catch (error) {
-		if (!(error instanceof BlockMarkerError)) throw error;
-		notify(`Observational memory: cannot promote: in ${target.contextPath}, ${error.message}; fix them by hand`, "error");
-		return undefined;
-	}
+	const originalContent = readPromotedMemory(target.memoryPath);
+	const parsed = parsePromotedMemory(originalContent ?? "");
 	const entries = ctx.sessionManager.getBranch() as Entry[];
 	const folded = foldLedger(entries);
 	if (folded.activeReflections.length === 0 && parsed.lines.length === 0) {
@@ -88,7 +80,7 @@ async function proposePromotion(runtime: Runtime, ctx: ExtensionCommandContext, 
 		const formatted = formatRecordedAt(timestamp);
 		if (formatted) recordedAt.set(id, formatted);
 	}
-	const contextFiles = contextFilesWithoutBlock(resolveProjectContextFiles(runtime, ctx.cwd).files, target, parsed);
+	const contextFiles = contextFilesWithoutMemoryFile(resolveProjectContextFiles(runtime, ctx.cwd).files, target);
 	notify(`Observational memory: choosing reflections to promote from ${folded.activeReflections.length} active`, "info");
 	status.show(`Promoting memory: choosing reflections… (${folded.activeReflections.length} active)`);
 	const proposal = await runStageWithFallback(consolidationCtx, "reflector", resolved, resolver, (worker) => {
@@ -132,7 +124,7 @@ async function proposePromotion(runtime: Runtime, ctx: ExtensionCommandContext, 
 
 export function registerPromoteCommand(pi: ExtensionAPI, runtime: Runtime): void {
 	pi.registerCommand("om:promote", {
-		description: "Promote durable project facts from memory into the project's AGENTS.md and .memory/",
+		description: "Promote durable project facts from memory into the project's .memory.md and .memory/",
 		handler: async (_args, ctx: ExtensionCommandContext) => {
 			runtime.ensureConfig(ctx.cwd);
 			const hasUI = ctx.hasUI;
@@ -174,7 +166,7 @@ export function registerPromoteCommand(pi: ExtensionAPI, runtime: Runtime): void
 					return;
 				}
 				const confirmed = plan;
-				status.show(`Promoting memory: writing ${basename(confirmed.target.contextPath)} and .memory/…`);
+				status.show(`Promoting memory: writing ${basename(confirmed.target.memoryPath)} and .memory/…`);
 				const result = await withConsolidationLock(runtime, notify, async () => {
 					const entries = ctx.sessionManager.getBranch() as Entry[];
 					return applyPromotePlan(confirmed, entries, foldLedger(entries), (customType, data) => pi.appendEntry(customType, data), ctx.cwd);
@@ -184,8 +176,6 @@ export function registerPromoteCommand(pi: ExtensionAPI, runtime: Runtime): void
 					notify(`Observational memory: nothing was written: ${result.reason}. Run /om:promote again`, "warning");
 					return;
 				}
-				// Pi keeps its copy of the file until /reload; the reflector sees OM's content meanwhile.
-				runtime.contextFileOverrides.set(confirmed.target.contextPath, stripBom(confirmed.newContent));
 				debugLog("promote.applied", {
 					lines: confirmed.proposedLines.length,
 					tokens: confirmed.tokens,
@@ -194,7 +184,7 @@ export function registerPromoteCommand(pi: ExtensionAPI, runtime: Runtime): void
 					promoted: confirmed.promotedIds.length,
 				});
 				notify(
-					`Observational memory: promoted ${confirmed.promotedIds.length} line(s) into ${confirmed.target.contextPath} , wrote ${result.memoryFilesWritten.length} and removed ${result.memoryFilesRemoved.length} .memory file(s). The main agent sees the new block after /reload or in a new session; commit .memory/ with the file.`,
+					`Observational memory: promoted ${confirmed.promotedIds.length} line(s) into ${confirmed.target.memoryPath}, wrote ${result.memoryFilesWritten.length} and removed ${result.memoryFilesRemoved.length} .memory file(s). The main agent sees them from its next prompt; commit .memory.md and .memory/ together.`,
 					"info",
 				);
 			} catch (error) {

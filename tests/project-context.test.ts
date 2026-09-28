@@ -1,4 +1,7 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const loader = vi.hoisted(() => ({ loadProjectContextFiles: vi.fn() as any }));
 
@@ -13,10 +16,12 @@ vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => ({
 import { renderProjectContext, withProjectContext } from "../src/agents/project-context.js";
 import {
 	captureProjectContextFiles,
+	promotedMemoryEnabled,
 	refreshProjectContextFromCommand,
 	registerProjectContextSnapshot,
 	resolveProjectContextFiles,
 } from "../src/hooks/project-context.js";
+import { renderPromotedMemory } from "../src/project-memory/memory-file.js";
 import { Runtime } from "../src/runtime.js";
 import { estimateStringTokens } from "../src/tokens.js";
 
@@ -138,26 +143,93 @@ describe("project context sources", () => {
 	});
 });
 
-describe("context file overrides from /om:promote", () => {
-	it("applies OM's content for written paths on top of every source, and appends a new file", () => {
-		const runtime = new Runtime();
-		runtime.contextFileOverrides.set(CWD.path, "promoted");
-		expect(resolveProjectContextFiles(runtime, "/repo/pkg")).toEqual({ files: [GLOBAL, { path: CWD.path, content: "promoted" }], source: "loader" });
-
-		captureProjectContextFiles(runtime, [GLOBAL, CWD], "snapshot");
-		expect(resolveProjectContextFiles(runtime, "/repo/pkg").files[1]).toEqual({ path: CWD.path, content: "promoted" });
-		expect(runtime.projectContext?.files[1]).toEqual(CWD);
-
-		runtime.contextFileOverrides.set(REPO.path, "created");
-		expect(resolveProjectContextFiles(runtime, "/repo/pkg").files.at(-1)).toEqual({ path: REPO.path, content: "created" });
+describe(".memory.md as a context file", () => {
+	const dirs: string[] = [];
+	afterEach(() => {
+		for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 	});
 
-	it("changes nothing without overrides or with the feature off", () => {
+	function repo(memory?: string): { root: string; memoryPath: string } {
+		const root = realpathSync(mkdtempSync(join(tmpdir(), "om-memory-md-")));
+		dirs.push(root);
+		mkdirSync(join(root, ".git"));
+		writeFileSync(join(root, ".git", "HEAD"), "ref: refs/heads/main\n");
+		writeFileSync(join(root, "AGENTS.md"), "rules");
+		if (memory !== undefined) writeFileSync(join(root, ".memory.md"), memory);
+		return { root, memoryPath: join(root, ".memory.md") };
+	}
+
+	const MEMORY = renderPromotedMemory(["- [aaaaaaaaaaaa] Fact A"]);
+
+	function beforeAgentStart(runtime: Runtime) {
+		let handler: ((event: any, ctx: any) => unknown) | undefined;
+		registerProjectContextSnapshot({ on: (name: string, cb: any) => { if (name === "before_agent_start") handler = cb; } } as any, runtime);
+		return (cwd: string, contextFiles: unknown) => {
+			const event = { type: "before_agent_start", systemPromptOptions: { cwd, contextFiles } };
+			return { result: handler!(event, { cwd }), contextFiles: event.systemPromptOptions.contextFiles as any[] };
+		};
+	}
+
+	function runtimeWith(config: Partial<Runtime["config"]> = {}): Runtime {
 		const runtime = new Runtime();
-		captureProjectContextFiles(runtime, [GLOBAL, CWD], "snapshot");
-		expect(resolveProjectContextFiles(runtime, "/repo")).toBe(runtime.projectContext);
-		runtime.config.projectContext = false;
-		runtime.contextFileOverrides.set(CWD.path, "promoted");
-		expect(resolveProjectContextFiles(runtime, "/repo")).toEqual({ files: [], source: "none" });
+		runtime.configLoaded = true;
+		runtime.config = { ...runtime.config, ...config };
+		return runtime;
+	}
+
+	it("appends .memory.md to the main agent's context files, read fresh, stripped of BOM and trailing space", () => {
+		const { root, memoryPath } = repo(`\uFEFF${MEMORY}\n\n`);
+		const runtime = runtimeWith();
+		const start = beforeAgentStart(runtime);
+		const agents = { path: join(root, "AGENTS.md"), content: "rules" };
+
+		const { result, contextFiles } = start(join(root, "pkg"), [agents]);
+		expect(result).toBeUndefined();
+		expect(contextFiles).toEqual([agents, { path: memoryPath, content: MEMORY.trimEnd() }]);
+		// The snapshot leaves it out; workers read it fresh after the other files.
+		expect(runtime.projectContext).toEqual({ files: [agents], source: "snapshot" });
+		expect(resolveProjectContextFiles(runtime, root)).toEqual({ files: [agents, { path: memoryPath, content: MEMORY.trimEnd() }], source: "snapshot" });
+
+		writeFileSync(memoryPath, renderPromotedMemory(["- [bbbbbbbbbbbb] Fact B"]));
+		expect(start(root, [agents]).contextFiles.at(-1).content).toContain("Fact B");
+		expect(resolveProjectContextFiles(runtime, root).files.at(-1)!.content).toContain("Fact B");
+	});
+
+	it("is not added twice when the path is already listed", () => {
+		const { root, memoryPath } = repo(MEMORY);
+		const listed = { path: memoryPath, content: "listed" };
+		expect(beforeAgentStart(runtimeWith())(root, [listed]).contextFiles).toEqual([listed]);
+
+		const runtime = runtimeWith();
+		runtime.projectContext = { files: [listed], source: "command" };
+		expect(resolveProjectContextFiles(runtime, root).files).toEqual([{ path: memoryPath, content: MEMORY.trimEnd() }]);
+	});
+
+	it("changes nothing when .memory.md is missing, empty or has no lines", () => {
+		for (const memory of [undefined, "", renderPromotedMemory([]), "Just a note.\n"]) {
+			const { root } = repo(memory);
+			const runtime = runtimeWith();
+			const files = [{ path: join(root, "AGENTS.md"), content: "rules" }];
+			expect(beforeAgentStart(runtime)(root, files).contextFiles).toEqual(files);
+			expect(resolveProjectContextFiles(runtime, root)).toBe(runtime.projectContext);
+		}
+	});
+
+	it("leaves a non-array contextFiles alone", () => {
+		const { root } = repo(MEMORY);
+		expect(beforeAgentStart(runtimeWith())(root, undefined).contextFiles).toBeUndefined();
+	});
+
+	it("is off with promotedMemory false, with --no-context-files or -nc, and for workers with projectContext false", () => {
+		const { root, memoryPath } = repo(MEMORY);
+		const off = runtimeWith({ promotedMemory: false });
+		expect(beforeAgentStart(off)(root, []).contextFiles).toEqual([]);
+		expect(resolveProjectContextFiles(off, root).files.some((file) => file.path === memoryPath)).toBe(false);
+
+		expect(promotedMemoryEnabled(runtimeWith(), ["node", "pi"])).toBe(true);
+		expect(promotedMemoryEnabled(runtimeWith(), ["node", "pi", "--no-context-files"])).toBe(false);
+		expect(promotedMemoryEnabled(runtimeWith(), ["node", "pi", "-nc"])).toBe(false);
+
+		expect(resolveProjectContextFiles(runtimeWith({ projectContext: false }), root)).toEqual({ files: [], source: "none" });
 	});
 });

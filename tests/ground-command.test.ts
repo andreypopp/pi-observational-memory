@@ -24,7 +24,7 @@ vi.mock("../src/agents/reviewer/agent.js", async (importOriginal) => ({
 import { GROUND_STATUS_WIDGET, registerGroundCommand } from "../src/commands/ground.js";
 import { registerCompactionHook } from "../src/hooks/compaction-hook.js";
 import { hashId } from "../src/ids.js";
-import { renderBlock, renderBlockLine } from "../src/project-memory/block.js";
+import { renderBlockLine, renderPromotedMemory } from "../src/project-memory/memory-file.js";
 import { Runtime } from "../src/runtime.js";
 import { foldLedger, OM_REFLECTIONS_DROPPED, OM_REFLECTIONS_RECORDED, recallMemorySources } from "../src/session-ledger/index.js";
 import {
@@ -41,14 +41,15 @@ const A = reflection(hashId("Config lives in foo.json"), ["aaaaaaaaaaaa"], { con
 const P = reflection(hashId("Build with make"), ["bbbbbbbbbbbb"], { content: "Build with make" });
 const Q = reflection(hashId("Lint with eslint"), ["bbbbbbbbbbbb"], { content: "Lint with eslint" });
 const NEW_P = "Build with just";
-const HEAD = "# Project\n\nHand-written rules.\n\n";
+const HAND_WRITTEN = "# Project\n\nHand-written rules.\n";
 
 let root: string;
 beforeEach(() => {
 	root = realpathSync(mkdtempSync(join(tmpdir(), "om-ground-cmd-")));
 	mkdirSync(join(root, ".git"));
 	writeFileSync(join(root, ".git", "HEAD"), "ref: refs/heads/main\n");
-	writeFileSync(join(root, "AGENTS.md"), `${HEAD}${renderBlock([renderBlockLine(P.id, P.content), renderBlockLine(Q.id, Q.content)])}\n`);
+	writeFileSync(join(root, "AGENTS.md"), HAND_WRITTEN);
+	writeFileSync(join(root, ".memory.md"), renderPromotedMemory([renderBlockLine(P.id, P.content), renderBlockLine(Q.id, Q.content)]));
 	for (const mock of Object.values(mockAgents)) {
 		mock.mockReset();
 		mock.mockResolvedValue(undefined);
@@ -159,10 +160,11 @@ function setup(options: { hasUI?: boolean; confirm?: () => boolean; idle?: boole
 	return { run, ctx, runtime, session, events, signal, abort: () => controller.abort(), lastReport: () => String(ctx.ui.notify.mock.lastCall?.[0]) };
 }
 
+const memory = () => readFileSync(join(root, ".memory.md"), "utf8");
 const agents = () => readFileSync(join(root, "AGENTS.md"), "utf8");
 
 describe("/om:ground", () => {
-	it("refuses while the agent is running, while busy, and with broken markers", async () => {
+	it("refuses while the agent is running, and while busy", async () => {
 		const running = setup({ idle: false });
 		await running.run();
 		expect(running.ctx.compact).not.toHaveBeenCalled();
@@ -173,15 +175,9 @@ describe("/om:ground", () => {
 		await busy.run().catch(() => undefined);
 		expect(busy.ctx.compact).not.toHaveBeenCalled();
 		expect(busy.ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("already running"), "warning");
-
-		writeFileSync(join(root, "AGENTS.md"), "<!-- om:promoted:start -->\n");
-		const broken = setup();
-		await broken.run();
-		expect(broken.ctx.compact).not.toHaveBeenCalled();
-		expect(broken.ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("cannot ground"), "error");
 	});
 
-	it("runs the grounding review inside the compaction hook and applies the block after it", async () => {
+	it("runs the grounding review inside the compaction hook and applies the block to .memory.md after it", async () => {
 		const { run, runtime, session, signal, events, lastReport } = setup();
 		await run();
 
@@ -196,9 +192,8 @@ describe("/om:ground", () => {
 		expect(args.projectContext ?? "").not.toContain("Build with make");
 
 		const newId = hashId(NEW_P);
-		expect(agents()).toContain(renderBlockLine(newId, NEW_P));
-		expect(agents()).not.toContain("Lint with eslint");
-		expect(agents().startsWith(HEAD)).toBe(true);
+		expect(memory()).toBe(renderPromotedMemory([renderBlockLine(newId, NEW_P)]));
+		expect(agents()).toBe(HAND_WRITTEN);
 		const dropped = session.appended.filter((entry) => entry.customType === OM_REFLECTIONS_DROPPED).map((entry) => entry.data);
 		expect(dropped).toContainEqual({ reflectionIds: [A.id], kind: "stale", reason: "src/config.ts:3 reads bar.json", coversUpToId: "raw-1" });
 		expect(dropped).toContainEqual(expect.objectContaining({ reflectionIds: [P.id], replacedBy: newId, reason: "justfile:1" }));
@@ -206,12 +201,12 @@ describe("/om:ground", () => {
 		expect(session.appended.find((entry) => entry.customType === OM_REFLECTIONS_RECORDED)?.data).toMatchObject({ reflections: [{ id: newId, replaces: [P.id] }] });
 		const recalled = recallMemorySources(session.sessionManager.getBranch() as any, Q.id);
 		expect(recalled.status === "found" && recalled.reflections[0].retirementReason).toBe("no eslint config");
-		expect(runtime.contextFileOverrides.get(join(root, "AGENTS.md"))).toBe(agents());
 
 		const report = lastReport();
 		expect(report).toContain("reflection pass complete");
 		expect(report).toContain("Grounding: 2 tool calls; 1 reflection retired as stale, 0 rewritten");
-		expect(report).toContain("Block: 1 rewritten, 1 removed (applied to AGENTS.md");
+		expect(report).toContain("Promoted lines: 1 rewritten, 1 removed (applied to .memory.md)");
+		expect(report).not.toContain("/reload");
 		expect(report).toContain(`- ${join(root, "AGENTS.md")}: "Hand-written rules." — none apply`);
 
 		// Plain lines under Pi's own spinner inside the hook; a spinner only while writing.
@@ -219,23 +214,23 @@ describe("/om:ground", () => {
 		expect(labels).toEqual(expect.arrayContaining([
 			`line ${GROUND_STATUS_WIDGET}: Grounding: observing…`,
 			`line ${GROUND_STATUS_WIDGET}: Grounding: reflecting…`,
-			`line ${GROUND_STATUS_WIDGET}: Grounding: checking 1 reflection and 2 AGENTS.md lines against the repo… 2 tool calls,`,
+			`line ${GROUND_STATUS_WIDGET}: Grounding: checking 1 reflection and 2 .memory.md lines against the repo… 2 tool calls,`,
 			`line ${GROUND_STATUS_WIDGET}: Grounding: folding memory…`,
-			`spin ${GROUND_STATUS_WIDGET}: Grounding: writing AGENTS.md and .memory/…`,
+			`spin ${GROUND_STATUS_WIDGET}: Grounding: writing .memory.md and .memory/…`,
 		]));
 		// Hidden before the confirm dialog, a spinner while writing, cleared at the end.
 		const confirmAt = events.indexOf("confirm");
 		expect(events[confirmAt - 1]).toBe(`hide ${GROUND_STATUS_WIDGET}`);
-		expect(events.slice(confirmAt + 1)).toEqual([`spin ${GROUND_STATUS_WIDGET}: Grounding: writing AGENTS.md and .memory/…`, `hide ${GROUND_STATUS_WIDGET}`]);
+		expect(events.slice(confirmAt + 1)).toEqual([`spin ${GROUND_STATUS_WIDGET}: Grounding: writing .memory.md and .memory/…`, `hide ${GROUND_STATUS_WIDGET}`]);
 		expect(runtime.compactInFlight || runtime.promoteInFlight || runtime.reflectRequest).toBeFalsy();
 	});
 
 	it("writes nothing to the block when declined, and only previews without UI", async () => {
-		const original = agents();
+		const original = memory();
 		const declined = setup({ confirm: () => false });
 		await declined.run();
-		expect(agents()).toBe(original);
-		expect(declined.lastReport()).toContain("Block: 1 rewritten, 1 removed (declined)");
+		expect(memory()).toBe(original);
+		expect(declined.lastReport()).toContain("Promoted lines: 1 rewritten, 1 removed (declined)");
 		expect(declined.events.slice(-2)).toEqual([`hide ${GROUND_STATUS_WIDGET}`, "confirm"]);
 
 		const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
@@ -247,7 +242,7 @@ describe("/om:ground", () => {
 			expect(output).toContain(`- [${P.id}] rewrite: justfile:1`);
 			expect(output).toContain("nothing was written");
 			expect(output).toContain("(preview only)");
-			expect(agents()).toBe(original);
+			expect(memory()).toBe(original);
 			expect(headless.ctx.ui.setWidget).not.toHaveBeenCalled();
 		} finally {
 			log.mockRestore();
@@ -256,13 +251,13 @@ describe("/om:ground", () => {
 
 	it("does not apply revisions when the block changed during grounding", async () => {
 		mockAgents.runObserver.mockImplementation(async () => {
-			writeFileSync(join(root, "AGENTS.md"), `${HEAD}${renderBlock([renderBlockLine(P.id, P.content)])}\n`);
+			writeFileSync(join(root, ".memory.md"), renderPromotedMemory([renderBlockLine(P.id, P.content)]));
 			return undefined;
 		});
 		const { run, lastReport } = setup();
 		await run();
 
-		expect(agents()).toContain("Build with make");
+		expect(memory()).toContain("Build with make");
 		expect(lastReport()).toContain("changed during grounding");
 	});
 
@@ -274,22 +269,22 @@ describe("/om:ground", () => {
 		expect(events[0].startsWith(`spin ${GROUND_STATUS_WIDGET}: Grounding: observing…`)).toBe(true);
 		expect(events.some((event) => event.startsWith("line "))).toBe(false);
 		expect(lastReport()).toContain("Pi had nothing to compact yet");
-		expect(lastReport()).toContain("Block: 1 rewritten, 1 removed (applied");
+		expect(lastReport()).toContain("Promoted lines: 1 rewritten, 1 removed (applied");
 		expect(events.at(-1)).toBe(`hide ${GROUND_STATUS_WIDGET}`);
 	});
 
 	it("reports a cancelled compaction and applies nothing", async () => {
-		const original = agents();
+		const original = memory();
 		const { run, runtime, ctx } = setup({ mode: "cancelled" });
 		await run();
 
-		expect(agents()).toBe(original);
+		expect(memory()).toBe(original);
 		expect(runtime.reflectRequest).toBeUndefined();
 		expect(ctx.ui.notify).toHaveBeenLastCalledWith(expect.stringContaining("/om:ground was cancelled"), "warning");
 	});
 
 	it("writes nothing from a review the compaction's Esc aborted", async () => {
-		const original = agents();
+		const original = memory();
 		const { run, session, ctx, abort } = setup();
 		const compact = ctx.compact.getMockImplementation();
 		ctx.compact.mockImplementation((callbacks: any) => compact({ ...callbacks, onComplete: () => callbacks.onError(new Error("Compaction cancelled")) }));
@@ -302,7 +297,7 @@ describe("/om:ground", () => {
 
 		expect(mockAgents.runReflectionReview).toHaveBeenCalledTimes(1);
 		expect(session.appended.filter((entry) => entry.customType === OM_REFLECTIONS_DROPPED)).toEqual([]);
-		expect(agents()).toBe(original);
+		expect(memory()).toBe(original);
 	});
 
 	it("roots the tools at the main worktree from a linked worktree", async () => {
@@ -319,8 +314,8 @@ describe("/om:ground", () => {
 
 		const args = mockAgents.runReflectionReview.mock.calls[0][0];
 		expect(args.grounding.root).toBe(root);
-		expect(args.grounding.contextPath).toBe(join(root, "AGENTS.md"));
-		expect(agents()).toContain(renderBlockLine(hashId(NEW_P), NEW_P));
+		expect(args.grounding.memoryPath).toBe(join(root, ".memory.md"));
+		expect(memory()).toContain(renderBlockLine(hashId(NEW_P), NEW_P));
 	});
 
 	it("leaves the active reflections untouched when the review makes no changes", async () => {
@@ -328,7 +323,7 @@ describe("/om:ground", () => {
 		const { run, session, lastReport } = setup();
 		await run();
 		expect(foldLedger(session.sessionManager.getBranch() as any).activeReflections.map((r) => r.id)).toEqual([A.id]);
-		expect(lastReport()).toContain("Block: no changes");
+		expect(lastReport()).toContain("Promoted lines: no changes");
 		expect(lastReport()).toContain("Stale hand-written text: none found");
 	});
 });

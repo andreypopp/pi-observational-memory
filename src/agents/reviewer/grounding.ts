@@ -3,7 +3,7 @@ import { Type } from "@earendil-works/pi-ai";
 import type { Static } from "typebox";
 import { debugLog } from "../../debug-log.js";
 import { hashId } from "../../ids.js";
-import { blockTokens, renderBlockLine, type BlockLine } from "../../project-memory/block.js";
+import { blockTokens, renderBlockLine, type BlockLine } from "../../project-memory/memory-file.js";
 import type { PromoteSourceRecord } from "../promoter/agent.js";
 import { normalizeContent } from "../worker-format.js";
 
@@ -20,8 +20,8 @@ export type GroundingReviewArgs = {
 	tools: AgentTool<any>[];
 	/** The project root the tools run in. */
 	root: string;
-	/** Context file holding the promoted block; its name labels the block section. */
-	contextPath: string;
+	/** `.memory.md`, holding the promoted lines; labels their section. */
+	memoryPath: string;
 	/** The promoted block's lines as read for this pass. */
 	blockLines: BlockLine[];
 	/** Reflection records behind block line ids; a rewrite carries their evidence. */

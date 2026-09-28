@@ -7,7 +7,7 @@ import { runReflectionReview } from "../src/agents/reviewer/agent.js";
 import { GROUNDING_SYSTEM, REVIEW_SYSTEM } from "../src/agents/reviewer/prompts.js";
 import { createRepoTools, groundingBashTimeout } from "../src/agents/reviewer/repo-tools.js";
 import { hashId } from "../src/ids.js";
-import { renderBlock, renderBlockLine, parseContextFile } from "../src/project-memory/block.js";
+import { parsePromotedMemory, renderBlockLine, renderPromotedMemory } from "../src/project-memory/memory-file.js";
 import { observation, reflection } from "./fixtures/session.js";
 
 function fakeAgentLoop(handler: (prompts: any[], context: any, config: any) => Promise<void> | void): any {
@@ -27,7 +27,7 @@ const LINE_Q = { id: "bbbbbbbbbbb2", content: "Lint with eslint" };
 const HAND = "Hand-written block line";
 
 function blockLines() {
-	return parseContextFile(`# P\n${renderBlock([renderBlockLine(LINE_P.id, LINE_P.content), renderBlockLine(LINE_Q.id, LINE_Q.content), `- ${HAND}`])}\n`).lines;
+	return parsePromotedMemory(renderPromotedMemory([renderBlockLine(LINE_P.id, LINE_P.content), renderBlockLine(LINE_Q.id, LINE_Q.content), `- ${HAND}`])).lines;
 }
 
 function repoTool(name: string, execute = vi.fn(async () => ({ content: [{ type: "text", text: `${name} output` }], details: {} }))) {
@@ -51,7 +51,7 @@ function grounding(overrides: Record<string, unknown> = {}) {
 	return {
 		tools: [repoTool("read"), repoTool("bash")],
 		root: "/repo",
-		contextPath: "/repo/AGENTS.md",
+		memoryPath: "/repo/.memory.md",
 		blockLines: blockLines(),
 		blockRecords: new Map([[LINE_P.id, { id: LINE_P.id, content: LINE_P.content, supportingObservationIds: ["eeeeeeeeeeee"] }]]),
 		maxBlockTokens: 1500,
@@ -92,7 +92,7 @@ describe("grounding review", () => {
 		expect(seen.context.messages[0].content).toBe(`${REVIEW_SYSTEM}\n\n${GROUNDING_SYSTEM}`);
 		const text: string = seen.prompts[0].content[0].text;
 		expect(text.startsWith("PROJECT INSTRUCTIONS:")).toBe(true);
-		expect(text).toContain(`AGENTS.md PROMOTED LINES (/repo/AGENTS.md):\n[${LINE_P.id}] Build with make\n[${LINE_Q.id}] Lint with eslint\n[${hashId(HAND)}] ${HAND}`);
+		expect(text).toContain(`.memory.md PROMOTED LINES (/repo/.memory.md):\n[${LINE_P.id}] Build with make\n[${LINE_Q.id}] Lint with eslint\n[${hashId(HAND)}] ${HAND}`);
 		expect(text).toContain("REPOSITORY: /repo");
 	});
 

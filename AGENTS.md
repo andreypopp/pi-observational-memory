@@ -76,22 +76,23 @@ must stay in the hook.
 
 ## /om:promote
 
-`src/commands/promote.ts` + `src/project-memory/` + `src/agents/promoter`. Writes only between the
-`om:promoted` markers of the context file at the repo root (main worktree root from a linked worktree, see
-`project-memory/target.ts`) and adds `.memory/<id>.md` files, never rewriting existing ones; it removes the `<id>.md` files the new block no
-longer reaches (`reachableMemoryIds`, shown in the preview; git history keeps them) and nothing else. Promoted
-reflections are retired with kind `promoted`, reversible like `project-instructions` and never offered to the
-reviewer. Pi caches context files until /reload, so `runtime.contextFileOverrides` applies OM's written
-content on top of every project-context source; do not call `ctx.reload()`. Recall falls back to the nearest
-`.memory/` only for ids not on the branch; with no store and no block, recall/status/worker inputs must stay
-byte-for-byte unchanged. Tests use temp dirs only.
+`src/commands/promote.ts` + `src/project-memory/` + `src/agents/promoter`. Writes only `.memory.md` (OM-owned: fixed
+header + `- [id] content` lines, rendered whole, deleted when empty; `project-memory/memory-file.ts`) at the repo root
+(main worktree root from a linked worktree, see `project-memory/target.ts`), never AGENTS.md, and adds `.memory/<id>.md`
+files, never rewriting existing ones; it removes the `<id>.md` files the new lines no longer reach (`reachableMemoryIds`,
+shown in the preview; git history keeps them). Promoted reflections are retired with kind `promoted`, reversible like
+`project-instructions` and never offered to the reviewer. Pi never loads `.memory.md`: OM's `before_agent_start` handler
+(`hooks/project-context.ts`) pushes a fresh read onto `event.systemPromptOptions.contextFiles` and the snapshot filters it
+out; `resolveProjectContextFiles` appends the same fresh read for workers. Off with `promotedMemory: false` or `-nc`.
+Recall falls back to the nearest `.memory/` only for ids not on the branch; with no `.memory.md` lines and no store,
+recall/status/prompt/worker inputs must stay byte-for-byte unchanged. Tests use temp dirs only.
 
 ## /om:ground
 
 `src/commands/ground.ts`: an /om:reflect request carrying `grounding` + `onProgress`; the pipeline passes them only to the
 review (`runReviewStep`), which then gets Pi's read/grep/find/ls/bash tools at the promote target root
-(`agents/reviewer/repo-tools.ts`, bash timeout-capped, prompt-only read-only), `GROUNDING_SYSTEM`, the block lines and
-`revise_promoted_block`. Block revisions are applied after the compaction via `/om:promote`'s plan/apply
+(`agents/reviewer/repo-tools.ts`, bash timeout-capped, prompt-only read-only), `GROUNDING_SYSTEM`, the `.memory.md` lines and
+`revise_promoted_block`. `.memory.md` revisions are applied after the compaction via `/om:promote`'s plan/apply
 (`project-memory/ground.ts`). `reason` on `om.reflections.dropped` is written only by grounding; fold/projection ignore
 it, recall shows it. Without `grounding`, review inputs, schema and ledger entries must stay byte-for-byte unchanged.
 

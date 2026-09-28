@@ -63,26 +63,25 @@ A reflection's `supportingObservationIds` are downstream dropper coverage eviden
 
 ### Reflection retirement
 
-Reflections are never edited or deleted, but they can be retired. An `om.reflections.dropped` ledger entry is a tombstone for reflection ids: plain retirement when it names no replacement, or replacement when `replacedBy` names the newer reflection, which lists the retired ids in its `replaces` field. A plain retirement may carry a `kind`: `stale`, `duplicate`, `project-instructions` (the reflection only restated the project's context files), or `promoted` (`/om:promote` moved it into the project's AGENTS.md). Entries written by `/om:ground` also carry a `reason`: the repository evidence (file:line or command output) for the retirement or replacement, which `recall` shows.
+Reflections are never edited or deleted, but they can be retired. An `om.reflections.dropped` ledger entry is a tombstone for reflection ids: plain retirement when it names no replacement, or replacement when `replacedBy` names the newer reflection, which lists the retired ids in its `replaces` field. A plain retirement may carry a `kind`: `stale`, `duplicate`, `project-instructions` (the reflection only restated the project's context files), or `promoted` (`/om:promote` moved it into the project's `.memory.md`). Entries written by `/om:ground` also carry a `reason`: the repository evidence (file:line or command output) for the retirement or replacement, which `recall` shows.
 
 Retirement is permanent, with one exception: an id retired with kind `project-instructions` or `promoted` is re-activated when a later `om.reflections.recorded` entry records it again, for example after that rule was removed from AGENTS.md. Every other retired id stays retired even if its reflection record appears later. Retired reflections leave active memory: workers never see them, and they never count as dropper coverage. Compaction treats retirements like reflections, so they become visible to the agent only at the next full fold. Recall still resolves a retired reflection, with its replacement and supporting evidence.
 
 ### Promoted memory
 
-Reflections belong to one session branch. `/om:promote` moves durable project facts (conventions, gotchas, build and test rules, architecture decisions, the user's preferences about the project) into a managed block of the project's AGENTS.md, which Pi loads into every session and subagent:
+Reflections belong to one session branch. `/om:promote` moves durable project facts (conventions, gotchas, build and test rules, architecture decisions, the user's preferences about the project) into `.memory.md` at the repository root, which OM adds to the main agent's context files on every prompt (see [`promotedMemory`](configuration.md#promotedmemory)):
 
 ```
-<!-- om:promoted:start -->
-## Promoted memory
+# Promoted memory
+
 Durable facts promoted from observational memory. `recall <id>` shows the evidence behind a line.
 
 - [55cb78965cbe] Throwaway tmux servers must be addressed with -S <resolved path>, never -L: …
-<!-- om:promoted:end -->
 ```
 
-A model call picks the facts, merges them with the block's existing lines and with the rest of AGENTS.md, and keeps the block within `promoteMaxTokens`. A line promoted unchanged keeps its reflection's id; a rewritten line is recorded as a new reflection that replaces its sources. Every promoted reflection is then retired with kind `promoted`, so it leaves active memory: the facts now reach the agent through AGENTS.md. Removing a line from the block writes nothing to the ledger.
+The file is OM's: only its `- ` lines are kept when OM rewrites it. A model call picks the facts, merges them with the existing lines and with the project's hand-written context files, and keeps the file within `promoteMaxTokens`. A line promoted unchanged keeps its reflection's id; a rewritten line is recorded as a new reflection that replaces its sources. Every promoted reflection is then retired with kind `promoted`, so it leaves active memory: the facts now reach the agent through `.memory.md`. Removing a line writes nothing to the ledger.
 
-Next to the context file, `.memory/<id>.md` stores each promoted reflection and everything it links to, transitively (the reflections it replaces and the supporting observations of each): YAML frontmatter with the record's fields and pi session id, the text verbatim, and relative links. `recall` falls back to this store for ids not on the branch. The files are meant to be committed; ids are content hashes, so OM never rewrites one. `/om:promote` removes the `<id>.md` files the new block no longer links to (listed in the preview; git history keeps them), so `.memory/` holds exactly what the block reaches.
+Next to it, `.memory/<id>.md` stores each promoted reflection and everything it links to, transitively (the reflections it replaces and the supporting observations of each): YAML frontmatter with the record's fields and pi session id, the text verbatim, and relative links. `recall` falls back to this store for ids not on the branch. The files are meant to be committed; ids are content hashes, so OM never rewrites one. `/om:promote` removes the `<id>.md` files the new lines no longer link to (listed in the preview; git history keeps them), so `.memory/` holds exactly what `.memory.md` reaches.
 
 ### Drops
 

@@ -2,8 +2,8 @@ import type { BlockRevision } from "../agents/reviewer/grounding.js";
 import type { ProposedBlockLine } from "../agents/promoter/agent.js";
 import { hashId } from "../ids.js";
 import type { FoldedLedger } from "../session-ledger/index.js";
-import { BlockMarkerError, parseContextFile, renderBlockLine, type BlockLine } from "./block.js";
-import { blockLineRecords, buildPromotePlan, readContextFile, type PromotePlan } from "./promote.js";
+import { parsePromotedMemory, readPromotedMemory, renderBlockLine, type BlockLine } from "./memory-file.js";
+import { blockLineRecords, buildPromotePlan, type PromotePlan } from "./promote.js";
 import { displayPath, type PromoteTarget } from "./target.js";
 
 export type GroundBlockPlan = { ok: true; plan: PromotePlan; rewritten: number; removed: number } | { ok: false; reason: string };
@@ -28,16 +28,10 @@ export function buildGroundBlockPlan(args: {
 	cwd: string;
 }): GroundBlockPlan {
 	const { target, folded } = args;
-	const originalContent = readContextFile(target.contextPath);
-	let lines: BlockLine[];
-	try {
-		lines = parseContextFile(originalContent ?? "").lines;
-	} catch (error) {
-		if (!(error instanceof BlockMarkerError)) throw error;
-		return { ok: false, reason: `in ${displayPath(target.contextPath, args.cwd)}, ${error.message}` };
-	}
+	const originalContent = readPromotedMemory(target.memoryPath);
+	const { lines } = parsePromotedMemory(originalContent ?? "");
 	if (!sameLines(lines, args.reviewedLines)) {
-		return { ok: false, reason: `the promoted block in ${displayPath(target.contextPath, args.cwd)} changed during grounding` };
+		return { ok: false, reason: `the promoted lines in ${displayPath(target.memoryPath, args.cwd)} changed during grounding` };
 	}
 
 	const revisionById = new Map(args.revisions.map((revision) => [revision.id, revision]));

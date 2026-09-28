@@ -1,31 +1,20 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname, join, relative, resolve } from "node:path";
-
-/** Pi's context file names in its lookup order (resource-loader `loadContextFileFromDir`). */
-export const CONTEXT_FILE_CANDIDATES = ["AGENTS.override.md", "AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD"] as const;
+import { MEMORY_FILE_NAME } from "./memory-file.js";
 
 export const MEMORY_DIR_NAME = ".memory";
 
 export type PromoteTarget = {
-	/** Directory holding the context file and `.memory/`. */
+	/** Directory holding `.memory.md` and `.memory/`. */
 	root: string;
-	/** The context file to write; AGENTS.md at `root` when none exists yet. */
-	contextPath: string;
-	contextExists: boolean;
+	/** The promoted lines' file, `.memory.md` at `root`. */
+	memoryPath: string;
 	memoryDir: string;
 	/** Set when cwd is inside a linked git worktree: the target is then the main worktree's root. */
 	linkedWorktreeRoot?: string;
 };
 
 type GitRoots = { worktreeRoot: string; mainRoot: string };
-
-function isFile(path: string): boolean {
-	try {
-		return statSync(path).isFile();
-	} catch {
-		return false;
-	}
-}
 
 /**
  * The git worktree containing `cwd` and its main worktree, read from `.git`, `gitdir` and `commondir`
@@ -58,27 +47,16 @@ export function findGitRoots(cwd: string): GitRoots | undefined {
 	}
 }
 
-/** The first existing context file in `dir`, in Pi's candidate order. */
-export function findContextFile(dir: string): string | undefined {
-	for (const name of CONTEXT_FILE_CANDIDATES) {
-		const path = join(dir, name);
-		if (isFile(path)) return path;
-	}
-	return undefined;
-}
-
 /**
- * Where /om:promote writes: the context file Pi loads from the repository root (the main worktree's root
- * when cwd is in a linked worktree, so no new context file is created inside one), or cwd outside git.
+ * Where /om:promote writes: `.memory.md` and `.memory/` at the repository root (the main worktree's root
+ * when cwd is in a linked worktree, so every worktree shares them), or at cwd outside git.
  */
 export function resolvePromoteTarget(cwd: string): PromoteTarget {
 	const roots = findGitRoots(cwd);
 	const root = roots?.mainRoot ?? resolve(cwd);
-	const existing = findContextFile(root);
 	return {
 		root,
-		contextPath: existing ?? join(root, "AGENTS.md"),
-		contextExists: existing !== undefined,
+		memoryPath: join(root, MEMORY_FILE_NAME),
 		memoryDir: join(root, MEMORY_DIR_NAME),
 		...(roots && roots.mainRoot !== roots.worktreeRoot ? { linkedWorktreeRoot: roots.worktreeRoot } : {}),
 	};

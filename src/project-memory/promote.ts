@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import type { PromoteSourceRecord, ProposedBlockLine } from "../agents/promoter/agent.js";
 import {
@@ -15,20 +15,23 @@ import {
 	type ReflectionsRecordedEntryData,
 } from "../session-ledger/index.js";
 import { estimateStringTokens } from "../tokens.js";
-import { blockTokens, parseContextFile, replaceBlock, type BlockLine } from "./block.js";
+import { blockTokens, parsePromotedMemory, readPromotedMemory, renderPromotedMemory, type BlockLine } from "./memory-file.js";
 import { memoryClosure, reflectionToMemoryRecord } from "./closure.js";
 import { listMemoryFileIds, readMemoryRecord, removeMemoryFiles, writeNewMemoryFiles, type MemoryRecord } from "./store.js";
 import { displayPath, type PromoteTarget } from "./target.js";
 
 export type PromotePlan = {
 	target: PromoteTarget;
-	/** The context file as read before the model call; undefined when it did not exist. */
+	/** `.memory.md` as read before the model call; undefined when it did not exist. */
 	originalContent: string | undefined;
 	currentLines: BlockLine[];
+	/** Text in `.memory.md` that is not a promoted line, dropped on write. */
+	droppedText: string[];
 	proposedLines: ProposedBlockLine[];
 	currentTokens: number;
 	tokens: number;
-	newContent: string;
+	/** The new `.memory.md`; undefined when no lines remain, which deletes the file. */
+	newContent: string | undefined;
 	/** New `.memory/` files, promoted reflections first. */
 	memoryRecords: MemoryRecord[];
 	existingMemoryIds: string[];
@@ -46,10 +49,6 @@ export type PromotePlan = {
 	/** /om:ground only: removed block lines' reflections, retired as stale with the evidence. */
 	staleRetirements?: { reflectionIds: string[]; reason: string }[];
 };
-
-export function readContextFile(path: string): string | undefined {
-	return existsSync(path) ? readFileSync(path, "utf8") : undefined;
-}
 
 /** Reflection records behind the block's id lines: the branch ledger first, then `.memory/`. */
 export function blockLineRecords(lines: readonly BlockLine[], folded: FoldedLedger, memoryDir: string): Map<string, PromoteSourceRecord> {
@@ -74,8 +73,7 @@ export function buildPromotePlan(args: {
 	promotedAt: string;
 }): PromotePlan {
 	const { target, originalContent, proposedLines, folded, sessionId, promotedAt } = args;
-	const content = originalContent ?? "";
-	const parsed = parseContextFile(content);
+	const parsed = parsePromotedMemory(originalContent ?? "");
 	const currentLines = parsed.lines;
 	const lineTexts = proposedLines.map((line) => line.line);
 	const recordedReflections: Reflection[] = [];
@@ -123,10 +121,11 @@ export function buildPromotePlan(args: {
 		target,
 		originalContent,
 		currentLines,
+		droppedText: parsed.dropped,
 		proposedLines,
 		currentTokens: blockTokens(currentLines.map((line) => line.raw.trim())),
 		tokens: blockTokens(lineTexts),
-		newContent: replaceBlock(content, lineTexts, parsed),
+		newContent: lineTexts.length > 0 ? renderPromotedMemory(lineTexts) : undefined,
 		memoryRecords: closure.records,
 		existingMemoryIds: closure.existingIds,
 		missingMemoryIds: closure.missingIds,
@@ -140,7 +139,7 @@ export function buildPromotePlan(args: {
 
 /** Whether applying the plan would change anything. */
 export function planChangesSomething(plan: PromotePlan): boolean {
-	return plan.newContent !== (plan.originalContent ?? "") || plan.memoryRecords.length > 0 || plan.orphanMemoryIds.length > 0 || plan.promotedIds.length > 0;
+	return plan.newContent !== plan.originalContent || plan.memoryRecords.length > 0 || plan.orphanMemoryIds.length > 0 || plan.promotedIds.length > 0;
 }
 
 function plural(n: number, singular: string, pluralForm = `${singular}s`): string {
@@ -160,7 +159,7 @@ function lineCounts(plan: PromotePlan): { added: number; kept: number; removed: 
 /** One line for the confirm dialog. */
 export function promoteSummary(plan: PromotePlan, cwd: string): string {
 	const { added, kept, removed } = lineCounts(plan);
-	return `${displayPath(plan.target.contextPath, cwd)}: +${added} / =${kept} / -${removed} lines (~${plan.tokens} tokens), +${plan.memoryRecords.length} / -${plan.orphanMemoryIds.length} .memory files. Apply?`;
+	return `${displayPath(plan.target.memoryPath, cwd)}: +${added} / =${kept} / -${removed} lines (~${plan.tokens} tokens), +${plan.memoryRecords.length} / -${plan.orphanMemoryIds.length} .memory files. Apply?`;
 }
 
 /** The full preview: block diff, `.memory/` files, ledger changes and budget. */
@@ -168,14 +167,18 @@ export function renderPromotePreview(plan: PromotePlan, cwd: string, maxTokens: 
 	const { target } = plan;
 	const proposedIds = new Set(plan.proposedLines.map((line) => line.id));
 	const lines: string[] = [title, ""];
-	lines.push(`Target: ${displayPath(target.contextPath, cwd)}${target.contextExists ? "" : " (new file)"}`);
+	const fileState = plan.originalContent === undefined ? " (new file)" : plan.newContent === undefined ? " (deleted: no lines remain)" : "";
+	lines.push(`Target: ${displayPath(target.memoryPath, cwd)}${fileState}`);
 	if (target.linkedWorktreeRoot) {
-		lines.push(`This is a linked git worktree (${target.linkedWorktreeRoot}); the block and .memory/ go to the main worktree at ${target.root}.`);
+		lines.push(`This is a linked git worktree (${target.linkedWorktreeRoot}); .memory.md and .memory/ go to the main worktree at ${target.root}.`);
 	}
 	lines.push(`Block: ~${plan.tokens} / ${maxTokens} tokens (was ~${plan.currentTokens})`, "");
 	for (const line of plan.currentLines) if (!proposedIds.has(line.id)) lines.push(`- ${line.raw.trim()}`);
 	for (const line of plan.proposedLines) lines.push(`${line.kind === "keep" ? "=" : "+"} ${line.line}`);
 	if (plan.currentLines.length === 0 && plan.proposedLines.length === 0) lines.push("(empty block)");
+	if (plan.droppedText.length > 0 && plan.newContent !== plan.originalContent) {
+		lines.push("", "Other text in the file, not kept (only `- ` lines are):", ...plan.droppedText.map((text) => `  ${text}`));
+	}
 	lines.push("");
 	const memoryDir = displayPath(target.memoryDir, cwd);
 	lines.push(plan.memoryRecords.length > 0
@@ -197,7 +200,7 @@ export function renderPromotePreview(plan: PromotePlan, cwd: string, maxTokens: 
 	return lines.join("\n");
 }
 
-/** Write through a temp file and rename; a symlinked context file is written at its real path. */
+/** Write through a temp file and rename; a symlinked file is written at its real path. */
 function writeFileAtomically(path: string, content: string): void {
 	const realPath = existsSync(path) ? realpathSync(path) : path;
 	const temp = join(dirname(realPath), `.${basename(realPath)}.om-promote-${process.pid}-${Date.now()}.tmp`);
@@ -228,8 +231,8 @@ export function promoteLedgerEntries(plan: PromotePlan, coversUpToId: string): P
 
 /** Why the plan can no longer be applied, or undefined when it still can. */
 export function stalePlanReason(plan: PromotePlan, folded: FoldedLedger, cwd: string): string | undefined {
-	if (readContextFile(plan.target.contextPath) !== plan.originalContent) {
-		return `${displayPath(plan.target.contextPath, cwd)} changed on disk since the preview`;
+	if (readPromotedMemory(plan.target.memoryPath) !== plan.originalContent) {
+		return `${displayPath(plan.target.memoryPath, cwd)} changed on disk since the preview`;
 	}
 	const activeIds = new Set(folded.activeReflections.map((reflection) => reflection.id));
 	const gone = plan.activeSourceIds.filter((id) => !activeIds.has(id));
@@ -242,8 +245,9 @@ export function stalePlanReason(plan: PromotePlan, folded: FoldedLedger, cwd: st
 export type ApplyResult = { ok: true; memoryFilesWritten: string[]; memoryFilesRemoved: string[] } | { ok: false; reason: string };
 
 /**
- * Apply a confirmed plan in order: new `.memory/` files, the context file (temp + rename), orphaned
- * `.memory/` files, then the ledger entries. Aborts without writing when the context file or the reflections changed since the preview.
+ * Apply a confirmed plan in order: new `.memory/` files, `.memory.md` (temp + rename, or deleted when no
+ * lines remain), orphaned `.memory/` files, then the ledger entries. Aborts without writing when `.memory.md`
+ * or the reflections changed since the preview.
  */
 export function applyPromotePlan(
 	plan: PromotePlan,
@@ -255,7 +259,8 @@ export function applyPromotePlan(
 	const stale = stalePlanReason(plan, folded, cwd);
 	if (stale) return { ok: false, reason: stale };
 	const memoryFilesWritten = writeNewMemoryFiles(plan.target.memoryDir, plan.memoryRecords);
-	if (plan.newContent !== (plan.originalContent ?? "")) writeFileAtomically(plan.target.contextPath, plan.newContent);
+	if (plan.newContent === undefined) rmSync(plan.target.memoryPath, { force: true });
+	else if (plan.newContent !== plan.originalContent) writeFileAtomically(plan.target.memoryPath, plan.newContent);
 	const memoryFilesRemoved = removeMemoryFiles(plan.target.memoryDir, plan.orphanMemoryIds);
 	const coversUpToId = latestCoverageMarkerId(entries, OM_OBSERVATIONS_RECORDED) ?? entries.at(-1)?.id;
 	if (coversUpToId) {

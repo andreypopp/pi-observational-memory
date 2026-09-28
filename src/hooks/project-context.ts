@@ -1,9 +1,10 @@
+import { basename } from "node:path";
 import * as piCodingAgent from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { isProjectContextFile, type ProjectContextFile } from "../agents/project-context.js";
 import { debugLog } from "../debug-log.js";
-import type { ParsedContextFile } from "../project-memory/block.js";
-import type { PromoteTarget } from "../project-memory/target.js";
+import { MEMORY_FILE_NAME, parsePromotedMemory, readPromotedMemory } from "../project-memory/memory-file.js";
+import { resolvePromoteTarget, type PromoteTarget } from "../project-memory/target.js";
 import type { Runtime } from "../runtime.js";
 
 /** Where the reflector's context files came from: "none" when the feature is off or nothing could be read. */
@@ -13,19 +14,64 @@ export type ResolvedProjectContextFiles = { files: ProjectContextFile[]; source:
 
 type ContextFileLoader = (options: { cwd: string; agentDir: string }) => unknown;
 
-/** Store context files Pi reported; ignored unless they arrive as an array. */
+/**
+ * Store context files Pi reported; ignored unless they arrive as an array. `.memory.md` is left out:
+ * {@link resolveProjectContextFiles} reads it fresh. Matched by name, not path: a command refresh has no cwd
+ * to resolve the target from; everywhere else the file is matched by its resolved path.
+ */
 export function captureProjectContextFiles(runtime: Runtime, files: unknown, source: "snapshot" | "command"): void {
 	if (!Array.isArray(files)) return;
-	runtime.projectContext = { files: files.filter(isProjectContextFile).map(({ path, content }) => ({ path, content })), source };
+	runtime.projectContext = {
+		files: files.filter(isProjectContextFile).filter((file) => basename(file.path) !== MEMORY_FILE_NAME).map(({ path, content }) => ({ path, content })),
+		source,
+	};
 }
 
 /**
- * Snapshot the session's context files from `before_agent_start`, which carries what Pi puts in the
- * main agent's system prompt (honouring --no-context-files). Observe only: returns nothing.
+ * Whether promoted memory reaches the main agent and the workers: off with `promotedMemory: false` or
+ * when Pi runs with --no-context-files. SDK hosts that disable context files are not detected.
+ */
+export function promotedMemoryEnabled(runtime: Runtime, argv: readonly string[] = process.argv): boolean {
+	return runtime.config.promotedMemory !== false && !argv.some((arg) => arg === "--no-context-files" || arg === "-nc");
+}
+
+/**
+ * `.memory.md` as a context file, read fresh from disk; undefined when promoted memory is off, or the file is
+ * missing, unreadable or has no lines.
+ */
+export function promotedMemoryContextFile(runtime: Runtime, cwd: string): ProjectContextFile | undefined {
+	if (!promotedMemoryEnabled(runtime)) return undefined;
+	const { memoryPath } = resolvePromoteTarget(cwd);
+	let raw: string | undefined;
+	try {
+		raw = readPromotedMemory(memoryPath);
+	} catch {
+		return undefined;
+	}
+	if (raw === undefined) return undefined;
+	const content = stripBom(raw).trimEnd();
+	return parsePromotedMemory(content).lines.length > 0 ? { path: memoryPath, content } : undefined;
+}
+
+/**
+ * On `before_agent_start`: add `.memory.md` to the main agent's context files (read fresh, so a promote
+ * reaches the next prompt), then snapshot the context files Pi puts in its system prompt (honouring
+ * --no-context-files). Edits the event's options in place and returns nothing.
  */
 export function registerProjectContextSnapshot(pi: ExtensionAPI, runtime: Runtime): void {
-	pi.on("before_agent_start", (event) => {
-		captureProjectContextFiles(runtime, event.systemPromptOptions?.contextFiles, "snapshot");
+	pi.on("before_agent_start", (event, ctx) => {
+		const contextFiles = event.systemPromptOptions?.contextFiles;
+		if (Array.isArray(contextFiles)) {
+			try {
+				const cwd = ctx?.cwd ?? event.systemPromptOptions.cwd ?? process.cwd();
+				runtime.ensureConfig(cwd);
+				const memory = promotedMemoryContextFile(runtime, cwd);
+				if (memory && !contextFiles.some((file) => file?.path === memory.path)) contextFiles.push(memory);
+			} catch (error) {
+				debugLog("project_context.memory_file_error", { errorMessage: error instanceof Error ? error.message : String(error) });
+			}
+		}
+		captureProjectContextFiles(runtime, contextFiles, "snapshot");
 	});
 }
 
@@ -50,29 +96,16 @@ function piContextFileLoader(): ContextFileLoader | undefined {
 }
 
 /**
- * Replace the content of files /om:promote wrote with what it wrote, since Pi's copy stays stale until
- * /reload; a written file Pi did not load (newly created) is appended. Unchanged without overrides.
- */
-export function applyContextFileOverrides(
-	resolved: ResolvedProjectContextFiles,
-	overrides: ReadonlyMap<string, string> | undefined,
-): ResolvedProjectContextFiles {
-	if (!overrides || overrides.size === 0 || resolved.source === "none") return resolved;
-	const files = resolved.files.map((file) => (overrides.has(file.path) ? { path: file.path, content: overrides.get(file.path)! } : file));
-	for (const [path, content] of overrides) {
-		if (!files.some((file) => file.path === path)) files.push({ path, content });
-	}
-	return { files, source: resolved.source };
-}
-
-/**
  * The context files the reflector should see. Prefers the latest snapshot or command refresh; without
  * one (a fresh Runtime after /reload, or a run started by `triggerTurn`, which skips before_agent_start)
- * it loads them the way Pi's resource loader does. Files /om:promote wrote are applied on top.
+ * it loads them the way Pi's resource loader does. `.memory.md`, read fresh, comes last.
  */
 export function resolveProjectContextFiles(runtime: Runtime, cwd: string): ResolvedProjectContextFiles {
 	if (runtime.config.projectContext === false) return { files: [], source: "none" };
-	return applyContextFileOverrides(loadProjectContextFiles(runtime, cwd), runtime.contextFileOverrides);
+	const resolved = loadProjectContextFiles(runtime, cwd);
+	const memory = promotedMemoryContextFile(runtime, cwd);
+	if (!memory) return resolved;
+	return { files: [...resolved.files.filter((file) => file.path !== memory.path), memory], source: resolved.source };
 }
 
 function loadProjectContextFiles(runtime: Runtime, cwd: string): ResolvedProjectContextFiles {
@@ -93,15 +126,7 @@ export function stripBom(content: string): string {
 	return content.replace(/^\uFEFF/, "");
 }
 
-/**
- * The session's resolved context files with the managed block cut out of the promote target, so the block's
- * lines are shown to /om:promote and /om:ground once, in their own section.
- */
-export function contextFilesWithoutBlock(files: ProjectContextFile[], target: PromoteTarget, parsed: ParsedContextFile): ProjectContextFile[] {
-	const outside = stripBom(parsed.outside);
-	if (files.some((file) => file.path === target.contextPath)) {
-		return files.map((file) => (file.path === target.contextPath ? { path: file.path, content: outside } : file));
-	}
-	// A linked worktree loads its own copy of the file; only add the target when Pi would load it.
-	return !target.linkedWorktreeRoot && outside.trim() ? [...files, { path: target.contextPath, content: outside }] : files;
+/** The resolved context files without `.memory.md`, whose lines /om:promote and /om:ground show in their own section. */
+export function contextFilesWithoutMemoryFile(files: ProjectContextFile[], target: PromoteTarget): ProjectContextFile[] {
+	return files.filter((file) => file.path !== target.memoryPath);
 }

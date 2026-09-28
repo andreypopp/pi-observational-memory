@@ -11,7 +11,7 @@ import { debugLog, withDebugLogContext } from "../debug-log.js";
 import type { ConsolidationReport, GroundingRequest, PassProgressDetail, PassStage } from "../reflect-report.js";
 import { blockLineRecords } from "../project-memory/promote.js";
 import { resolveObserverChunkMaxTokens, resolveProjectContextMaxTokens } from "../config.js";
-import { contextFilesWithoutBlock, resolveProjectContextFiles, type ResolvedProjectContextFiles } from "./project-context.js";
+import { contextFilesWithoutMemoryFile, resolveProjectContextFiles, type ResolvedProjectContextFiles } from "./project-context.js";
 import type { ConsolidationPhase, ResolveCtx, ResolveResult, Runtime } from "../runtime.js";
 import { fmtLocal, serializeSourceAddressedBranchEntries } from "../serialize.js";
 import {
@@ -235,14 +235,14 @@ function projectContextFor(
 	return rendered.text;
 }
 
-/** The review's context files for /om:ground: the promoted block is cut out, since it has its own section. */
+/** The review's context files for /om:ground: `.memory.md` is left out, since its lines have their own section. */
 function groundingProjectFiles(
 	runtime: Runtime,
 	grounding: GroundingRequest,
 	projectFiles: ResolvedProjectContextFiles,
 ): ResolvedProjectContextFiles {
 	if (runtime.config.projectContext === false) return projectFiles;
-	return { files: contextFilesWithoutBlock(projectFiles.files, grounding.target, grounding.parsed), source: projectFiles.source };
+	return { files: contextFilesWithoutMemoryFile(projectFiles.files, grounding.target), source: projectFiles.source };
 }
 
 /** The review's /om:ground arguments: repo tools at the promote target root and the block to check. */
@@ -250,7 +250,7 @@ function groundingReviewArgs(runtime: Runtime, grounding: GroundingRequest, fold
 	return {
 		tools: createRepoTools(grounding.target.root),
 		root: grounding.target.root,
-		contextPath: grounding.target.contextPath,
+		memoryPath: grounding.target.memoryPath,
 		blockLines: grounding.parsed.lines,
 		blockRecords: blockLineRecords(grounding.parsed.lines, folded, grounding.target.memoryDir),
 		maxBlockTokens: runtime.config.promoteMaxTokens,

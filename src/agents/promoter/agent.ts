@@ -5,7 +5,7 @@ import type { Static } from "typebox";
 import { debugLog } from "../../debug-log.js";
 import { hashId } from "../../ids.js";
 import { AGENT_LOOP_MAX_TOKENS, boundedMaxTokens } from "../../model-budget.js";
-import { blockTokens, renderBlockLine, type BlockLine } from "../../project-memory/block.js";
+import { blockTokens, renderBlockLine, type BlockLine } from "../../project-memory/memory-file.js";
 import type { Reflection } from "../../session-ledger/index.js";
 import { withProjectContext } from "../project-context.js";
 import { reflectionToReviewLine } from "../reviewer/agent.js";
@@ -23,7 +23,7 @@ interface RunPromoterArgs {
 	apiKey?: string;
 	headers?: Record<string, string>;
 	env?: Record<string, string>;
-	/** Current lines of the managed block. */
+	/** Current lines of `.memory.md`. */
 	blockLines: BlockLine[];
 	/** Reflection records behind block line ids (branch ledger or `.memory/`), when known. */
 	blockRecords: ReadonlyMap<string, PromoteSourceRecord>;
@@ -32,7 +32,7 @@ interface RunPromoterArgs {
 	recordedAt: ReadonlyMap<string, string>;
 	/** Retired reflection ids; a rewritten line must not reuse one. */
 	retiredReflectionIds: ReadonlySet<string>;
-	/** Rendered PROJECT INSTRUCTIONS block without the promoted block; "" or absent leaves it out. */
+	/** Rendered PROJECT INSTRUCTIONS block without `.memory.md`; "" or absent leaves it out. */
 	projectContext?: string;
 	maxBlockTokens: number;
 	signal?: AbortSignal;

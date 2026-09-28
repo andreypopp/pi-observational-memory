@@ -2,10 +2,10 @@ import { basename } from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { debugLog } from "../debug-log.js";
 import { runReflectPass } from "../hooks/compaction-hook.js";
-import { refreshProjectContextFromCommand, stripBom } from "../hooks/project-context.js";
-import { BlockMarkerError, parseContextFile, type ParsedContextFile } from "../project-memory/block.js";
+import { refreshProjectContextFromCommand } from "../hooks/project-context.js";
+import { parsePromotedMemory, readPromotedMemory } from "../project-memory/memory-file.js";
 import { buildGroundBlockPlan } from "../project-memory/ground.js";
-import { applyPromotePlan, promoteSummary, readContextFile, renderPromotePreview } from "../project-memory/promote.js";
+import { applyPromotePlan, promoteSummary, renderPromotePreview } from "../project-memory/promote.js";
 import { displayPath, resolvePromoteTarget } from "../project-memory/target.js";
 import {
 	emptyReflectReport,
@@ -51,7 +51,7 @@ type GroundProgress = {
  */
 function groundProgress(status: StatusWidget, grounding: GroundingRequest): GroundProgress {
 	const startedAt = Date.now();
-	const blockName = basename(grounding.target.contextPath);
+	const blockName = basename(grounding.target.memoryPath);
 	let spinner = false;
 	let text: (() => string) | undefined;
 	let timer: ReturnType<typeof setInterval> | undefined;
@@ -134,16 +134,14 @@ async function applyBlockRevisions(
 		if (compactionBusy(runtime)) {
 			return outcome("not applied: a compaction started meanwhile");
 		}
-		status.show(`Grounding: writing ${basename(plan.target.contextPath)} and .memory/…`);
+		status.show(`Grounding: writing ${basename(plan.target.memoryPath)} and .memory/…`);
 		const result = await withConsolidationLock(runtime, notify, async () => {
 			const live = ctx.sessionManager.getBranch() as Entry[];
 			return applyPromotePlan(plan, live, foldLedger(live), (customType, data) => pi.appendEntry(customType, data), ctx.cwd);
 		}, "grounding the block");
 		if (!result.ok) return outcome(`not applied: ${result.reason}`);
-		// Pi keeps its copy of the file until /reload; the reflector sees OM's content meanwhile.
-		runtime.contextFileOverrides.set(plan.target.contextPath, stripBom(plan.newContent));
 		debugLog("ground.block_applied", { rewritten: built.rewritten, removed: built.removed, memoryFilesWritten: result.memoryFilesWritten.length, memoryFilesRemoved: result.memoryFilesRemoved.length });
-		return outcome(`applied to ${displayPath(plan.target.contextPath, ctx.cwd)}; the main agent sees it after /reload`);
+		return outcome(`applied to ${displayPath(plan.target.memoryPath, ctx.cwd)}`);
 	} finally {
 		status.hide();
 		runtime.promoteInFlight = false;
@@ -152,7 +150,7 @@ async function applyBlockRevisions(
 
 export function registerGroundCommand(pi: ExtensionAPI, runtime: Runtime): void {
 	pi.registerCommand("om:ground", {
-		description: "Check memory and the promoted AGENTS.md block against the repository, then compact with a full memory fold",
+		description: "Check memory and the promoted .memory.md lines against the repository, then compact with a full memory fold",
 		handler: async (_args, ctx: ExtensionCommandContext) => {
 			runtime.ensureConfig(ctx.cwd);
 			const notify = commandNotify(ctx);
@@ -167,14 +165,7 @@ export function registerGroundCommand(pi: ExtensionAPI, runtime: Runtime): void 
 				return;
 			}
 			const target = resolvePromoteTarget(ctx.cwd);
-			let parsed: ParsedContextFile;
-			try {
-				parsed = parseContextFile(readContextFile(target.contextPath) ?? "");
-			} catch (error) {
-				if (!(error instanceof BlockMarkerError)) throw error;
-				notify(`Observational memory: cannot ground: in ${target.contextPath}, ${error.message}; fix them by hand`, "error");
-				return;
-			}
+			const parsed = parsePromotedMemory(readPromotedMemory(target.memoryPath) ?? "");
 
 			// Holding compactInFlight keeps the auto-compaction trigger quiet until this compaction ends.
 			runtime.compactInFlight = true;

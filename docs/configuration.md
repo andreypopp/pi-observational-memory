@@ -81,7 +81,8 @@ You can omit everything. Defaults work for ordinary sessions, and if `model` is 
 | `reflectorModel.thinking` | enum | unset; falls back to `model.thinking` then `low` | Optional reasoning/thinking level for reflector calls on `reflectorModel`. |
 | `projectContext` | boolean | `true` | Shows the session's context files (AGENTS.md, CLAUDE.md, …) to both reflector calls. `false` leaves worker inputs unchanged. |
 | `projectContextMaxTokens` | positive integer | derived | Maximum estimated tokens of project context per reflector call. Unset: `max(20000, floor(contextWindow * 0.1))` of the reflector model, or `20000` when unknown. |
-| `promoteMaxTokens` | positive integer | `1500` | Maximum estimated tokens of the managed block `/om:promote` writes into the project's AGENTS.md. |
+| `promotedMemory` | boolean | `true` | Adds the project's `.memory.md` to the main agent's context files and to the reflector's project context. |
+| `promoteMaxTokens` | positive integer | `1500` | Maximum estimated tokens of the `.memory.md` `/om:promote` writes. |
 | `groundMaxTurns` | positive integer | `60` | Turn cap for `/om:ground`'s grounding review; replaces `agentMaxTurns` for that call only. |
 | `showWorkerNotifications` | boolean | `true` | Shows routine observer, reflector, and dropper progress notifications. |
 | `passive` | boolean | `false` | Disables proactive background memory and auto-compaction triggers. |
@@ -244,7 +245,7 @@ Default: `true`.
 
 Pi loads the project's context files (the global `~/.pi/agent/AGENTS.md`, then AGENTS.md or CLAUDE.md from the repository root down to the working directory) into every main-agent call. A reflection that restates them is paid twice. With `projectContext` on, both reflector calls see those files as `PROJECT INSTRUCTIONS`: crystallize does not record what they already say, and the review retires reflections they fully cover, with retirement kind `project-instructions`. Such retirements are reversible: if the rule later leaves AGENTS.md, crystallize may record the same reflection again and it becomes active. The observer and dropper never see the files.
 
-The files come from what Pi reported at `before_agent_start` (honouring `--no-context-files`), from `/om:reflect`, or from Pi's own loader when neither is available yet. A file `/om:promote` wrote is shown with OM's new content until the runtime reloads, because Pi keeps its copy until `/reload`. `/om:status` shows a `Project context:` line when files are in use, and the debug log records a `reflector.project_context` event per call.
+The files come from what Pi reported at `before_agent_start` (honouring `--no-context-files`), from `/om:reflect`, or from Pi's own loader when neither is available yet; the project's `.memory.md` (see [`promotedMemory`](#promotedmemory)) is read fresh and added last. `/om:status` shows a `Project context:` line when files are in use, and the debug log records a `reflector.project_context` event per call.
 
 Set `false` to turn this off; the reflector inputs are then exactly what they were without the feature.
 
@@ -254,11 +255,21 @@ Default: unset, meaning `max(20000, floor(contextWindow * 0.1))` estimated token
 
 Files are kept whole. The budget fills from the most specific file (nearest the working directory) backwards, so the global file is the first to go; left-out files are listed by path and size.
 
+## `promotedMemory`
+
+Default: `true`.
+
+`/om:promote` writes promoted lines to `.memory.md` at the repository root, which Pi does not load itself. OM adds it after Pi's context files at every `before_agent_start`, reading it from disk each time, so a promote or `/om:ground` change reaches the main agent on its next prompt. The reflector, review, promoter and grounding review read it the same way (the promoter and grounding review show its lines in their own section instead). A file that is missing or has no `- ` lines adds nothing.
+
+Each change to the file is recorded in the session as an updated project-context system message, and switching to a branch where the file differs changes the prompt head (a prompt-cache miss). Turns started by an extension's `triggerTurn` skip `before_agent_start`, so such a turn renders without `.memory.md`, and the next normal prompt adds it back.
+
+Set `false` to turn this off. It is also off when Pi runs with `--no-context-files` / `-nc`, detected from the process arguments; SDK hosts that disable context files some other way are not detected.
+
 ## `promoteMaxTokens`
 
 Default: `1500`.
 
-The whole managed block `/om:promote` writes (markers, heading and lines) must stay within this many estimated tokens (characters / 4). The block is loaded into every session and subagent of the project, so keep it small; the promote call merges, rewrites and drops lines to fit. `/om:status` shows the block's size as `Promoted: N lines (~T tokens) in <path>`.
+The whole `.memory.md` `/om:promote` writes (header and lines) must stay within this many estimated tokens (characters / 4). It is loaded into every session of the project, so keep it small; the promote call merges, rewrites and drops lines to fit. `/om:status` shows its size as `Promoted: N lines (~T tokens) in <path>`.
 
 ## `groundMaxTurns`
 

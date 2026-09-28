@@ -1,5 +1,5 @@
 import type { BlockRevision, StaleTextReport } from "./agents/reviewer/grounding.js";
-import type { ParsedContextFile } from "./project-memory/block.js";
+import type { ParsedPromotedMemory } from "./project-memory/memory-file.js";
 import type { PromoteTarget } from "./project-memory/target.js";
 import type { ConsolidationPhase } from "./runtime.js";
 
@@ -46,8 +46,8 @@ export type PassProgressDetail = { reflections: number };
  */
 export type GroundingRequest = {
 	target: PromoteTarget;
-	/** The context file as parsed when the command started; its block lines are what the review checks. */
-	parsed: ParsedContextFile;
+	/** `.memory.md` as parsed when the command started; its lines are what the review checks. */
+	parsed: ParsedPromotedMemory;
 	/** Called after each repo tool call, with `toolCalls` already counted. */
 	onToolCall?: () => void;
 	toolCalls: number;
@@ -126,8 +126,8 @@ export function renderGroundReport(report: ReflectReport, grounding: GroundingRe
 	lines.push(
 		`Grounding: ${grounding.toolCalls} tool call${grounding.toolCalls === 1 ? "" : "s"}; ${grounding.reflectionsRetiredStale} reflection${grounding.reflectionsRetiredStale === 1 ? "" : "s"} retired as stale, ${grounding.reflectionsRewritten} rewritten`,
 		block.rewritten + block.removed > 0
-			? `Block: ${block.rewritten} rewritten, ${block.removed} removed (${block.status})`
-			: `Block: ${block.status}`,
+			? `Promoted lines: ${block.rewritten} rewritten, ${block.removed} removed (${block.status})`
+			: `Promoted lines: ${block.status}`,
 	);
 	if (grounding.staleText.length === 0) lines.push("Stale hand-written text: none found");
 	else {

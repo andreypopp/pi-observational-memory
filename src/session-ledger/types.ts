@@ -9,7 +9,7 @@ export type Relevance = (typeof RELEVANCE_VALUES)[number];
 
 /**
  * Why a reflection was retired outright. "project-instructions" and "promoted" (moved into the project's
- * AGENTS.md by /om:promote) retirements are reversible: see `foldLedger`.
+ * .memory.md by /om:promote) retirements are reversible: see `foldLedger`.
  */
 export const REFLECTION_RETIREMENT_KINDS = ["stale", "duplicate", "project-instructions", "promoted"] as const;
 export type ReflectionRetirementKind = (typeof REFLECTION_RETIREMENT_KINDS)[number];
