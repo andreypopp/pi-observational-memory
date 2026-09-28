@@ -5,7 +5,8 @@ function pad(n: number): string {
 	return n.toString().padStart(2, "0");
 }
 
-function fmtLocal(d: Date): string {
+/** Local "YYYY-MM-DD HH:MM". */
+export function fmtLocal(d: Date): string {
 	return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 

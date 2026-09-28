@@ -183,13 +183,16 @@ describe("Runtime V3 behavior", () => {
 
 		expect(runtime.recordConsolidationStageError({ hasUI: true, ui: { notify } }, "observer", new Error("observe failed"))).toBe("observe failed");
 		expect(runtime.recordConsolidationStageError({ hasUI: true, ui: { notify } }, "reflector", new Error("reflect failed"))).toBe("reflect failed");
+		expect(runtime.recordConsolidationStageError({ hasUI: true, ui: { notify } }, "review", new Error("review failed"))).toBe("review failed");
 		expect(runtime.recordConsolidationStageError({ hasUI: true, ui: { notify } }, "dropper", "drop failed")).toBe("drop failed");
 
 		expect(runtime.lastObserverError).toBe("observe failed");
 		expect(runtime.lastReflectorError).toBe("reflect failed");
+		expect(runtime.lastReviewError).toBe("review failed");
 		expect(runtime.lastDropperError).toBe("drop failed");
 		expect(notify).toHaveBeenCalledWith("Observational memory: observer failed: observe failed", "warning");
 		expect(notify).toHaveBeenCalledWith("Observational memory: reflector failed: reflect failed", "warning");
+		expect(notify).toHaveBeenCalledWith("Observational memory: review failed: review failed", "warning");
 		expect(notify).toHaveBeenCalledWith("Observational memory: dropper failed: drop failed", "warning");
 	});
 

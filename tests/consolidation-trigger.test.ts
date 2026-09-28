@@ -87,10 +87,11 @@ function setup(args: {
 			model: { provider: "anthropic", id: "memory", thinking: "minimal" },
 		},
 		consolidationInFlight: args.consolidationInFlight ?? false,
-		consolidationPhase: undefined as "observer" | "reflector" | "dropper" | undefined,
+		consolidationPhase: undefined as "observer" | "reflector" | "review" | "dropper" | undefined,
 		resolveFailureNotified: false,
 		lastObserverError: undefined as string | undefined,
 		lastReflectorError: undefined as string | undefined,
+		lastReviewError: undefined as string | undefined,
 		lastDropperError: undefined as string | undefined,
 		ensureConfig: vi.fn(),
 		resolveModel: vi.fn(async () => ({ ok: true, model: { reasoning: true }, apiKey: "key", headers: { h: "v" } })),
@@ -102,10 +103,11 @@ function setup(args: {
 			launchedWork = work;
 			return Promise.resolve();
 		}),
-		recordConsolidationStageError: vi.fn((ctx, phase: "observer" | "reflector" | "dropper", error: unknown) => {
+		recordConsolidationStageError: vi.fn((ctx, phase: "observer" | "reflector" | "review" | "dropper", error: unknown) => {
 			const message = error instanceof Error ? error.message : String(error);
 			if (phase === "observer") runtime.lastObserverError = message;
 			if (phase === "reflector") runtime.lastReflectorError = message;
+			if (phase === "review") runtime.lastReviewError = message;
 			if (phase === "dropper") runtime.lastDropperError = message;
 			ctx.ui?.notify(`Observational memory: ${phase} failed: ${message}`, "warning");
 			return message;
@@ -1296,8 +1298,9 @@ describe("reflection review run", () => {
 		await runLaunchedWork();
 
 		expect(pi.appendEntry.mock.calls).toEqual([[OM_REFLECTIONS_RECORDED, { reflections: [newRef], coversUpToId: "raw-1" }]]);
-		expect(runtime.lastReflectorError).toBe("review exploded");
-		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("reflector failed: review exploded"), "warning");
+		expect(runtime.lastReviewError).toBe("review exploded");
+		expect(runtime.lastReflectorError).toBeUndefined();
+		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("review failed: review exploded"), "warning");
 		expect(mockAgents.runDropper).toHaveBeenCalledWith(expect.objectContaining({ reflections: [old, stale, newRef] }));
 	});
 

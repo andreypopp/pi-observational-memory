@@ -41,6 +41,7 @@ function setup(args: { entries: TestEntry[]; runtime?: Partial<any>; model?: unk
 		compactHookInFlight: false,
 		lastObserverError: undefined,
 		lastReflectorError: undefined,
+		lastReviewError: undefined,
 		lastDropperError: undefined,
 		...args.runtime,
 	};
@@ -173,6 +174,7 @@ describe("V3 /om:status", () => {
 				compactHookInFlight: true,
 				lastObserverError: "observer failed",
 				lastReflectorError: "reflect failed",
+				lastReviewError: "review failed",
 				lastDropperError: "drop failed",
 			},
 		}).run();
@@ -185,6 +187,7 @@ describe("V3 /om:status", () => {
 		expect(output).toContain("Compaction hook: running");
 		expect(output).toContain("Observer: observer failed");
 		expect(output).toContain("Reflector: reflect failed");
+		expect(output).toContain("Review: review failed");
 		expect(output).toContain("Dropper: drop failed");
 	});
 

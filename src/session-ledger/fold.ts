@@ -32,6 +32,8 @@ export type FoldedLedger = {
 	retiredReflectionIds: Set<string>;
 	/** Replacing reflection id per retired reflection id, for retirements that named one. */
 	reflectionReplacedBy: Map<string, string>;
+	/** Timestamp of the entry that first recorded each reflection id, when that entry has one. */
+	reflectionRecordedAt: Map<string, string>;
 	/** All first-valid observation records by id, including dropped observations. */
 	observationsById: Map<string, Observation>;
 	/** All first-valid reflection records by id, including retired reflections. */
@@ -42,6 +44,19 @@ function foldEndIndex(entries: Entry[], upToEntryId: string | undefined): number
 	if (!upToEntryId) return entries.length - 1;
 	const idx = entries.findIndex((entry) => entry.id === upToEntryId);
 	return idx === -1 ? entries.length - 1 : idx;
+}
+
+/** Retire each id; the first retirement that names a replacement wins. */
+export function applyReflectionRetirement(
+	reflectionIds: readonly string[],
+	replacedBy: string | undefined,
+	retiredReflectionIds: Set<string>,
+	reflectionReplacedBy: Map<string, string>,
+): void {
+	for (const reflectionId of reflectionIds) {
+		retiredReflectionIds.add(reflectionId);
+		if (replacedBy && !reflectionReplacedBy.has(reflectionId)) reflectionReplacedBy.set(reflectionId, replacedBy);
+	}
 }
 
 function isCustomEntry(entry: Entry, customType: string): boolean {
@@ -62,6 +77,7 @@ export function foldLedger(entries: Entry[], options: FoldLedgerOptions = {}): F
 	const droppedObservationIds = new Set<string>();
 	const retiredReflectionIds = new Set<string>();
 	const reflectionReplacedBy = new Map<string, string>();
+	const reflectionRecordedAt = new Map<string, string>();
 	const endIdx = foldEndIndex(entries, options.upToEntryId);
 
 	for (let i = 0; i <= endIdx; i++) {
@@ -83,6 +99,7 @@ export function foldLedger(entries: Entry[], options: FoldLedgerOptions = {}): F
 			for (const reflection of entry.data.reflections) {
 				if (!reflectionsById.has(reflection.id)) {
 					reflectionsById.set(reflection.id, reflection);
+					if (entry.timestamp) reflectionRecordedAt.set(reflection.id, entry.timestamp);
 				}
 			}
 			continue;
@@ -98,11 +115,7 @@ export function foldLedger(entries: Entry[], options: FoldLedgerOptions = {}): F
 
 		if (isCustomEntry(entry, OM_REFLECTIONS_DROPPED)) {
 			if (!isReflectionsDroppedData(entry.data)) continue;
-			const { replacedBy } = entry.data;
-			for (const reflectionId of entry.data.reflectionIds) {
-				retiredReflectionIds.add(reflectionId);
-				if (replacedBy && !reflectionReplacedBy.has(reflectionId)) reflectionReplacedBy.set(reflectionId, replacedBy);
-			}
+			applyReflectionRetirement(entry.data.reflectionIds, entry.data.replacedBy, retiredReflectionIds, reflectionReplacedBy);
 		}
 	}
 
@@ -119,19 +132,8 @@ export function foldLedger(entries: Entry[], options: FoldLedgerOptions = {}): F
 		activeReflections,
 		retiredReflectionIds,
 		reflectionReplacedBy,
+		reflectionRecordedAt,
 		observationsById,
 		reflectionsById,
 	};
-}
-
-/** Timestamp of the first valid om.reflections.recorded entry that recorded each reflection id, in branch order. */
-export function reflectionRecordTimestamps(entries: Entry[]): Map<string, string | undefined> {
-	const recordedAt = new Map<string, string | undefined>();
-	for (const entry of entries) {
-		if (!isCustomEntry(entry, OM_REFLECTIONS_RECORDED) || !isReflectionsRecordedData(entry.data)) continue;
-		for (const reflection of entry.data.reflections) {
-			if (!recordedAt.has(reflection.id)) recordedAt.set(reflection.id, entry.timestamp);
-		}
-	}
-	return recordedAt;
 }

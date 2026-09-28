@@ -210,7 +210,7 @@ export async function runReflectionReview(args: RunReflectionReviewArgs): Promis
 	);
 	for await (const event of stream) {
 		// Tool execution collects decisions.
-		logAgentStreamError("reflector.review", event);
+		logAgentStreamError("review", event);
 	}
 	await stream.result();
 

@@ -1,3 +1,4 @@
+import { applyReflectionRetirement } from "./fold.js";
 import {
 	isObservationsDroppedEntry,
 	isObservationsRecordedEntry,
@@ -129,11 +130,7 @@ function indexLedger(entries: Entry[]): {
 			continue;
 		}
 		if (isReflectionsDroppedEntry(entry)) {
-			const { replacedBy } = entry.data;
-			for (const id of entry.data.reflectionIds) {
-				retiredReflectionIds.add(id);
-				if (replacedBy && !reflectionReplacedBy.has(id)) reflectionReplacedBy.set(id, replacedBy);
-			}
+			applyReflectionRetirement(entry.data.reflectionIds, entry.data.replacedBy, retiredReflectionIds, reflectionReplacedBy);
 		}
 	}
 

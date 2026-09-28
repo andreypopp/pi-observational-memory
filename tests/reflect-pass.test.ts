@@ -78,6 +78,7 @@ function setup(args: { entries: TestEntry[]; observationsPoolMaxTokens?: number;
 		reflectorModelFailureNotified: false,
 		lastObserverError: undefined as string | undefined,
 		lastReflectorError: undefined as string | undefined,
+		lastReviewError: undefined as string | undefined,
 		lastDropperError: undefined as string | undefined,
 		ensureConfig: vi.fn(),
 		resolveModel: vi.fn(async () => ({ ok: true, model: { reasoning: true }, apiKey: "key" })),
@@ -95,6 +96,7 @@ function setup(args: { entries: TestEntry[]; observationsPoolMaxTokens?: number;
 			const message = error instanceof Error ? error.message : String(error);
 			if (phase === "observer") runtime.lastObserverError = message;
 			if (phase === "reflector") runtime.lastReflectorError = message;
+			if (phase === "review") runtime.lastReviewError = message;
 			if (phase === "dropper") runtime.lastDropperError = message;
 			return message;
 		}),

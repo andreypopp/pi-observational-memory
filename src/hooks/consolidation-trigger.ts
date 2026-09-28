@@ -8,7 +8,7 @@ import { debugLog, withDebugLogContext } from "../debug-log.js";
 import type { ConsolidationReport } from "../reflect-report.js";
 import { resolveObserverChunkMaxTokens } from "../config.js";
 import type { ConsolidationPhase, ResolveCtx, ResolveResult, Runtime } from "../runtime.js";
-import { serializeSourceAddressedBranchEntries } from "../serialize.js";
+import { fmtLocal, serializeSourceAddressedBranchEntries } from "../serialize.js";
 import {
 	OM_OBSERVATIONS_DROPPED,
 	OM_OBSERVATIONS_RECORDED,
@@ -26,7 +26,6 @@ import {
 	latestCoverageMarkerId,
 	observationToSummaryLine,
 	realTokensSinceAnchor,
-	reflectionRecordTimestamps,
 	rawTokensSinceObservationCoverage,
 	rawTokensSinceReflectionCoverage,
 	reflectionToSummaryLine,
@@ -82,16 +81,11 @@ type ReflectorStageResult = {
 	effectiveReflectionCoverageId?: string;
 };
 
-function pad(n: number): string {
-	return n.toString().padStart(2, "0");
-}
-
 /** Local "YYYY-MM-DD HH:MM", the same shape as observation timestamps. */
 function formatRecordedAt(timestamp: string | undefined): string | undefined {
 	if (!timestamp) return undefined;
 	const d = new Date(timestamp);
-	if (Number.isNaN(d.getTime())) return undefined;
-	return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+	return Number.isNaN(d.getTime()) ? undefined : fmtLocal(d);
 }
 
 function sourceEntriesAfter(entries: Entry[], index: number): Entry[] {
@@ -615,13 +609,13 @@ async function runReflectorStage(
 	return {
 		outcome: "continue",
 		sameRunReflections,
-		effectiveReflectionCoverageId: data || reviewRecorded ? observationCoverageId : undefined,
+		effectiveReflectionCoverageId: (data || reviewRecorded) ? observationCoverageId : undefined,
 	};
 }
 
 /**
  * Review active reflections after crystallize: retire stale ones and replace verbose or overlapping ones.
- * Runs on the reflector's model with its fallback retry. A failure is recorded as a reflector error but keeps
+ * Runs on the reflector's model with its fallback retry. A failure is recorded as a review error but keeps
  * crystallize's output. Returns the recorded replacements when the review wrote anything, else undefined.
  */
 async function runReviewStep(
@@ -640,7 +634,7 @@ async function runReviewStep(
 	if (!resolved) return undefined;
 
 	const recordedAt = new Map<string, string>();
-	for (const [id, timestamp] of reflectionRecordTimestamps(entries)) {
+	for (const [id, timestamp] of folded.reflectionRecordedAt) {
 		const formatted = formatRecordedAt(timestamp);
 		if (formatted) recordedAt.set(id, formatted);
 	}
@@ -657,6 +651,7 @@ async function runReviewStep(
 	const startedAt = Date.now();
 
 	let result: Awaited<ReturnType<typeof runReflectionReview>>;
+	runtime.consolidationPhase = "review";
 	try {
 		result = await runStageWithFallback(ctx, "reflector", resolved, resolver, (worker) => runReflectionReview({
 			model: worker.model as any,
@@ -676,10 +671,12 @@ async function runReviewStep(
 		}));
 	} catch (error) {
 		debugLog("reflector.review_error", {
-			errorMessage: runtime.recordConsolidationStageError(ctx, "reflector", error),
+			errorMessage: runtime.recordConsolidationStageError(ctx, "review", error),
 			elapsedMs: Date.now() - startedAt,
 		});
 		return undefined;
+	} finally {
+		runtime.consolidationPhase = "reflector";
 	}
 
 	let wrote = false;
