@@ -85,13 +85,6 @@ export interface Config {
 	 * cap from the reflector model's context window; see {@link resolveProjectContextMaxTokens}.
 	 */
 	projectContextMaxTokens?: number;
-	/**
-	 * Add the project's `.memory.md` (lines /om:promote wrote) to the main agent's context files and to the
-	 * workers' project context. `false` leaves both unchanged.
-	 */
-	promotedMemory: boolean;
-	/** Maximum estimated tokens of the `.memory.md` /om:promote writes. */
-	promoteMaxTokens: number;
 	/** Turn cap for /om:ground's grounding review, which inspects the repo with tools; replaces agentMaxTurns for that call. */
 	groundMaxTurns: number;
 	showWorkerNotifications: boolean;
@@ -110,8 +103,6 @@ export const DEFAULTS: Config = {
 	agentMaxTurns: 16,
 	agentMaxTokens: 32_000,
 	projectContext: true,
-	promotedMemory: true,
-	promoteMaxTokens: 1_500,
 	groundMaxTurns: 60,
 	showWorkerNotifications: true,
 	passive: false,
@@ -265,7 +256,6 @@ function normalizeSettingsConfig(value: Record<string, unknown>): Partial<Config
 		"agentMaxTurns",
 		"agentMaxTokens",
 		"projectContextMaxTokens",
-		"promoteMaxTokens",
 		"groundMaxTurns",
 	] as const;
 	for (const key of numberKeys) {
@@ -278,7 +268,6 @@ function normalizeSettingsConfig(value: Record<string, unknown>): Partial<Config
 	const ratio = validRatioOrUndefined(value.compactAfterTokensRatio);
 	if (ratio !== undefined) normalized.compactAfterTokensRatio = ratio;
 	if (typeof value.projectContext === "boolean") normalized.projectContext = value.projectContext;
-	if (typeof value.promotedMemory === "boolean") normalized.promotedMemory = value.promotedMemory;
 	if (typeof value.showWorkerNotifications === "boolean") normalized.showWorkerNotifications = value.showWorkerNotifications;
 	if (typeof value.passive === "boolean") normalized.passive = value.passive;
 	if (typeof value.debugLog === "boolean") normalized.debugLog = value.debugLog;

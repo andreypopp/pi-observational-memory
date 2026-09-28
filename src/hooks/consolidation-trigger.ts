@@ -9,9 +9,8 @@ import type { GroundingReviewArgs } from "../agents/reviewer/grounding.js";
 import { createRepoTools } from "../agents/reviewer/repo-tools.js";
 import { debugLog, withDebugLogContext } from "../debug-log.js";
 import type { ConsolidationReport, GroundingRequest, PassProgressDetail, PassStage } from "../reflect-report.js";
-import { promotedLineRecords } from "../project-memory/promote.js";
 import { resolveObserverChunkMaxTokens, resolveProjectContextMaxTokens } from "../config.js";
-import { contextFilesWithoutMemoryFile, resolveProjectContextFiles, type ResolvedProjectContextFiles } from "./project-context.js";
+import { resolveProjectContextFiles, type ResolvedProjectContextFiles } from "./project-context.js";
 import type { ConsolidationPhase, ResolveCtx, ResolveResult, Runtime } from "../runtime.js";
 import { fmtLocal, serializeSourceAddressedBranchEntries } from "../serialize.js";
 import {
@@ -35,7 +34,6 @@ import {
 	rawTokensSinceReflectionCoverage,
 	reflectionToSummaryLine,
 	type Entry,
-	type FoldedLedger,
 	type Observation,
 	type Reflection,
 	type V3MemoryCustomType,
@@ -75,6 +73,8 @@ export type ConsolidationOptions = {
 	report?: ConsolidationReport;
 	/** /om:ground: the review checks memory against the repository with tools and collects its results here. */
 	grounding?: GroundingRequest;
+	/** /om:reflect or /om:ground instruction for both reflector calls; absent leaves their inputs unchanged. */
+	instruction?: string;
 	/** Called as each stage starts, for /om:ground's progress. */
 	onProgress?: (stage: PassStage, detail?: PassProgressDetail) => void;
 };
@@ -235,25 +235,11 @@ function projectContextFor(
 	return rendered.text;
 }
 
-/** The review's context files for /om:ground: `.memory.md` is left out, since its lines have their own section. */
-function groundingProjectFiles(
-	runtime: Runtime,
-	grounding: GroundingRequest,
-	projectFiles: ResolvedProjectContextFiles,
-): ResolvedProjectContextFiles {
-	if (runtime.config.projectContext === false) return projectFiles;
-	return { files: contextFilesWithoutMemoryFile(projectFiles.files, grounding.target), source: projectFiles.source };
-}
-
-/** The review's /om:ground arguments: repo tools at the promote target root and the block to check. */
-function groundingReviewArgs(runtime: Runtime, grounding: GroundingRequest, folded: FoldedLedger): GroundingReviewArgs {
+/** The review's /om:ground arguments: repo tools at the session's directory, where the main agent works. */
+function groundingReviewArgs(grounding: GroundingRequest, cwd: string): GroundingReviewArgs {
 	return {
-		tools: createRepoTools(grounding.target.root),
-		root: grounding.target.root,
-		memoryPath: grounding.target.memoryPath,
-		promotedLines: grounding.parsed.lines,
-		lineRecords: promotedLineRecords(grounding.parsed.lines, folded, grounding.target.memoryDir),
-		maxPromotedTokens: runtime.config.promoteMaxTokens,
+		tools: createRepoTools(cwd),
+		root: cwd,
 		onToolCall: () => {
 			grounding.toolCalls++;
 			grounding.onToolCall?.();
@@ -648,6 +634,7 @@ async function runReflectorStage(
 		knownReflectionIds: folded.knownReflectionIds,
 		observations: folded.activeObservations,
 		projectContext: projectContextFor(runtime, projectFiles, worker, "crystallize"),
+		...(options.instruction ? { userInstruction: options.instruction } : {}),
 		signal: options.signal,
 		maxTurns: runtime.config.agentMaxTurns,
 		maxOutputTokens: runtime.config.agentMaxTokens,
@@ -696,8 +683,8 @@ async function runReviewStep(
 	const entries = ctx.sessionManager.getBranch() as Entry[];
 	const folded = foldLedger(entries);
 	const { grounding } = options;
-	// A grounding pass also checks the promoted block, so it runs with no active reflections too.
-	if (folded.activeReflections.length === 0 && !(grounding && grounding.parsed.lines.length > 0)) return undefined;
+	// A grounding pass also checks the project instructions, so it runs with no active reflections too.
+	if (folded.activeReflections.length === 0 && !(grounding && projectFiles.files.length > 0)) return undefined;
 	const resolved = await resolver.resolve("reflector");
 	if (!resolved) return undefined;
 
@@ -732,13 +719,14 @@ async function runReviewStep(
 			retiredReflectionIds: folded.retiredReflectionIds,
 			recordedAt,
 			observations: folded.activeObservations,
-			projectContext: projectContextFor(runtime, grounding ? groundingProjectFiles(runtime, grounding, projectFiles) : projectFiles, worker, "review"),
+			projectContext: projectContextFor(runtime, projectFiles, worker, "review"),
+			...(options.instruction ? { userInstruction: options.instruction } : {}),
 			signal: options.signal,
 			maxTurns: grounding ? runtime.config.groundMaxTurns : runtime.config.agentMaxTurns,
 			maxOutputTokens: runtime.config.agentMaxTokens,
 			thinkingLevel: workerThinkingLevel(runtime, worker),
 			modelRegistry: ctx.modelRegistry,
-			...(grounding ? { grounding: groundingReviewArgs(runtime, grounding, folded) } : {}),
+			...(grounding ? { grounding: groundingReviewArgs(grounding, ctx.cwd) } : {}),
 		}));
 	} catch (error) {
 		debugLog("reflector.review_error", {
@@ -754,7 +742,6 @@ async function runReviewStep(
 	if (grounding && result) {
 		if (result.grounding) {
 			grounding.reviewed = true;
-			grounding.lineRevisions = result.grounding.lineRevisions;
 			grounding.staleText = result.grounding.staleText;
 		}
 		grounding.reflectionsRewritten += result.replacements.length;

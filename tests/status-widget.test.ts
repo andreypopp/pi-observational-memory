@@ -39,9 +39,9 @@ describe("statusWidget", () => {
 		status.show("Grounding: checking… 3 tool calls, 6s", { spinner: false });
 		expect(rendered.map((item) => item.lines)).toEqual([["Grounding: checking… 2 tool calls, 5s"], ["Grounding: checking… 3 tool calls, 6s"]]);
 
-		status.show("Grounding: writing AGENTS.md and .memory/…");
+		status.show("Grounding: observing…");
 		expect(setWidget).toHaveBeenNthCalledWith(3, "om-ground", undefined);
-		expect(text(rendered[3].loader)).toContain("writing AGENTS.md");
+		expect(text(rendered[3].loader)).toContain("observing…");
 		status.hide();
 		status.hide();
 		expect(setWidget).toHaveBeenCalledTimes(5);

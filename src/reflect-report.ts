@@ -1,6 +1,4 @@
-import type { PromotedLineRevision, StaleTextReport } from "./agents/reviewer/grounding.js";
-import type { ParsedPromotedMemory } from "./project-memory/memory-file.js";
-import type { PromoteTarget } from "./project-memory/target.js";
+import type { StaleTextReport } from "./agents/reviewer/grounding.js";
 import type { ConsolidationPhase } from "./runtime.js";
 
 /** Counts a consolidation pass accumulates when a caller asks for a report (the /om:reflect pass). */
@@ -42,12 +40,9 @@ export type PassProgressDetail = { reflections: number };
 
 /**
  * /om:ground's part of a forced pass: its review checks memory against the repository with tools.
- * The pass fills in the results; the command applies block revisions after the compaction.
+ * The pass fills in the results for the command's report.
  */
 export type GroundingRequest = {
-	target: PromoteTarget;
-	/** `.memory.md` as parsed when the command started; its lines are what the review checks. */
-	parsed: ParsedPromotedMemory;
 	/** Called after each repo tool call, with `toolCalls` already counted. */
 	onToolCall?: () => void;
 	toolCalls: number;
@@ -55,13 +50,14 @@ export type GroundingRequest = {
 	reviewed: boolean;
 	reflectionsRetiredStale: number;
 	reflectionsRewritten: number;
-	lineRevisions: PromotedLineRevision[];
 	staleText: StaleTextReport[];
 };
 
 /** One-shot /om:reflect (or /om:ground) request, consumed by the next compaction hook. */
 export type ReflectRequest = {
 	report: ReflectReport;
+	/** The command's trimmed arguments, for both reflector calls; absent when there were none. */
+	instruction?: string;
 	/** Set by /om:ground. */
 	grounding?: GroundingRequest;
 	/** Called as each stage of the pass starts. */
@@ -94,9 +90,15 @@ function sizeLine(label: string, before: number, after: number, beforeTokens: nu
 	return `${label}: ${before.toLocaleString()} → ${after.toLocaleString()} (~${beforeTokens.toLocaleString()} → ~${afterTokens.toLocaleString()} tokens)`;
 }
 
-export function renderReflectReport(report: ReflectReport): string {
+/** The one-line echo of a command's instruction, for its start notice and report; [] without one. */
+export function instructionLine(instruction: string | undefined): string[] {
+	return instruction ? [`Instruction: ${instruction.replace(/\s+/g, " ")}`] : [];
+}
+
+export function renderReflectReport(report: ReflectReport, instruction?: string): string {
 	const lines = [
 		"Observational memory: reflection pass complete",
+		...instructionLine(instruction),
 		`Observations: +${report.observationsRecorded} recorded, -${report.observationsDropped} dropped`,
 		`Reflections: +${report.reflectionsAdded} new, ${report.reflectionsReplaced} replaced by ${report.replacementsRecorded}, ${report.reflectionsRetired} retired`,
 	];
@@ -114,20 +116,14 @@ export function renderReflectReport(report: ReflectReport): string {
 	return lines.join("\n");
 }
 
-/** How /om:ground's block revisions ended: "no changes", "applied", "declined", "preview only" or "not applied: …". */
-export type GroundPromoteOutcome = { rewritten: number; removed: number; status: string };
-
-export function renderGroundReport(report: ReflectReport, grounding: GroundingRequest, promoted: GroundPromoteOutcome): string {
-	const lines = [renderReflectReport(report)];
+export function renderGroundReport(report: ReflectReport, grounding: GroundingRequest, instruction?: string): string {
+	const lines = [renderReflectReport(report, instruction)];
 	if (!grounding.reviewed) {
 		lines.push("Grounding: the grounding review did not run; /om:status shows any memory worker error.");
 		return lines.join("\n");
 	}
 	lines.push(
 		`Grounding: ${grounding.toolCalls} tool call${grounding.toolCalls === 1 ? "" : "s"}; ${grounding.reflectionsRetiredStale} reflection${grounding.reflectionsRetiredStale === 1 ? "" : "s"} retired as stale, ${grounding.reflectionsRewritten} rewritten`,
-		promoted.rewritten + promoted.removed > 0
-			? `Promoted lines: ${promoted.rewritten} rewritten, ${promoted.removed} removed (${promoted.status})`
-			: `Promoted lines: ${promoted.status}`,
 	);
 	if (grounding.staleText.length === 0) lines.push("Stale hand-written text: none found");
 	else {

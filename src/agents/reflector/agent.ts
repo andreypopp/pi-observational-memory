@@ -6,6 +6,7 @@ import { debugLog } from "../../debug-log.js";
 import { hashId } from "../../ids.js";
 import { logAgentStreamError } from "../stream-errors.js";
 import { withProjectContext } from "../project-context.js";
+import { withUserInstruction } from "../user-instruction.js";
 import { workerMessages } from "../worker-prompt.js";
 import { resolveWorkerStreamSimple, type StreamableModelRegistry, type WorkerStreamSimple } from "../worker-stream.js";
 import { AGENT_LOOP_MAX_TOKENS, boundedMaxTokens } from "../../model-budget.js";
@@ -41,6 +42,8 @@ interface RunReflectorArgs {
 	observations: Observation[];
 	/** Rendered PROJECT INSTRUCTIONS block, prepended to the user message; "" or absent leaves it unchanged. */
 	projectContext?: string;
+	/** /om:reflect or /om:ground instruction text, placed after PROJECT INSTRUCTIONS; absent leaves the message unchanged. */
+	userInstruction?: string;
 	signal?: AbortSignal;
 	agentLoop?: typeof agentLoop;
 	maxTurns?: number;
@@ -185,7 +188,7 @@ export async function runReflector(args: RunReflectorArgs): Promise<Reflection[]
 		},
 	};
 
-	const userText = withProjectContext(args.projectContext, `CURRENT REFLECTIONS:\n${joinOrEmpty(reflections.map(reflectionToSummaryLine))}\n\nCURRENT OBSERVATIONS:\n${joinOrEmpty(observations.map((observation) => observationToReflectorLine(observation, coverageTierForObservation(observation, coverageById))))}\n\nCrystallize any missing durable facts or patterns into new reflections. If nothing is stable enough, do not call the tool.`);
+	const userText = withProjectContext(args.projectContext, withUserInstruction(args.userInstruction, `CURRENT REFLECTIONS:\n${joinOrEmpty(reflections.map(reflectionToSummaryLine))}\n\nCURRENT OBSERVATIONS:\n${joinOrEmpty(observations.map((observation) => observationToReflectorLine(observation, coverageTierForObservation(observation, coverageById))))}\n\nCrystallize any missing durable facts or patterns into new reflections. If nothing is stable enough, do not call the tool.`));
 	const { system, prompts } = workerMessages(model, REFLECTOR_SYSTEM, userText);
 	const context: AgentContext = {
 		messages: system,

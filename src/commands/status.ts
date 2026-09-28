@@ -1,11 +1,8 @@
-import { relative } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { observationPoolMetrics } from "../agents/dropper/pool.js";
 import { renderProjectContext } from "../agents/project-context.js";
 import { resolveCompactAfterTokens, resolveProjectContextMaxTokens } from "../config.js";
 import { resolveProjectContextFiles } from "../hooks/project-context.js";
-import { promotedLineTokens, parsePromotedMemory, readPromotedMemory } from "../project-memory/memory-file.js";
-import { resolvePromoteTarget } from "../project-memory/target.js";
 import type { Runtime } from "../runtime.js";
 import {
 	diffProjection,
@@ -57,21 +54,6 @@ async function projectContextLine(runtime: Runtime, ctx: { cwd: string; model?: 
 	const rendered = renderProjectContext(files, resolveProjectContextMaxTokens(runtime.config, await reflectorContextWindow(runtime, ctx)));
 	const omitted = rendered.omitted.length > 0 ? ` (${rendered.omitted.length} omitted)` : "";
 	return [`Project context: ${rendered.fileCount} file(s), ~${rendered.estimatedTokens.toLocaleString()} tokens${omitted}`];
-}
-
-/** "Promoted: …" status line, only when the project has a `.memory.md`. */
-function promotedLine(cwd: string): string[] {
-	try {
-		const target = resolvePromoteTarget(cwd);
-		const raw = readPromotedMemory(target.memoryPath);
-		if (raw === undefined) return [];
-		const parsed = parsePromotedMemory(raw);
-		const tokens = promotedLineTokens(parsed.lines.map((line) => line.raw.trim()));
-		const path = relative(cwd, target.memoryPath) || target.memoryPath;
-		return [`Promoted: ${parsed.lines.length} line${parsed.lines.length === 1 ? "" : "s"} (~${tokens.toLocaleString()} tokens) in ${path}`];
-	} catch {
-		return [];
-	}
 }
 
 function appendSuffixes(line: string, suffixes: (string | undefined)[]): string {
@@ -132,7 +114,6 @@ export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void 
 				observationLine,
 				reflectionLine,
 				...(await projectContextLine(runtime, ctx)),
-				...promotedLine(ctx.cwd),
 				"",
 				"── Activity ──",
 				`Next observation: ~${obsProgress.toLocaleString()} / ${runtime.config.observeAfterTokens.toLocaleString()} tokens (${pct(obsProgress, runtime.config.observeAfterTokens)}%)`,

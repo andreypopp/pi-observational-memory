@@ -8,10 +8,10 @@ export const RELEVANCE_VALUES = ["low", "medium", "high", "critical"] as const;
 export type Relevance = (typeof RELEVANCE_VALUES)[number];
 
 /**
- * Why a reflection was retired outright. "project-instructions" and "promoted" (moved into the project's
- * .memory.md by /om:promote) retirements are reversible: see `foldLedger`.
+ * Why a reflection was retired outright. "project-instructions" retirements are reversible: see `foldLedger`.
+ * Entries with any other kind, such as the removed "promoted", are invalid and ignored.
  */
-export const REFLECTION_RETIREMENT_KINDS = ["stale", "duplicate", "project-instructions", "promoted"] as const;
+export const REFLECTION_RETIREMENT_KINDS = ["stale", "duplicate", "project-instructions"] as const;
 export type ReflectionRetirementKind = (typeof REFLECTION_RETIREMENT_KINDS)[number];
 
 export const MEMORY_ID_PATTERN = /^[a-f0-9]{12}$/;

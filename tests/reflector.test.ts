@@ -329,13 +329,14 @@ describe("runReflector project context", () => {
 	};
 	const PROJECT = "PROJECT INSTRUCTIONS (loaded into every session of this project; reference only):\n\n### /repo/AGENTS.md\nRun npm test.";
 
-	async function userTextFor(model: unknown, projectContext?: string) {
+	async function userTextFor(model: unknown, projectContext?: string, userInstruction?: string) {
 		let userText = "";
 		let systemPrompt = "";
 		await runReflector({
 			...args,
 			model: model as any,
 			projectContext,
+			userInstruction,
 			agentLoop: fakeAgentLoop((prompts, context) => {
 				userText = prompts[0].content[0].text;
 				systemPrompt = context.messages[0]?.content ?? "";
@@ -365,5 +366,18 @@ describe("runReflector project context", () => {
 
 		expect(empty.userText).toBe(without.userText);
 		expect(without.userText.startsWith("CURRENT REFLECTIONS:\n")).toBe(true);
+	});
+
+	it("puts the user instruction right after the project context, or first without one, leaving the system prompt alone", async () => {
+		const plain = await userTextFor({}, PROJECT);
+		const instructed = await userTextFor({}, PROJECT, "merge the auth reflections");
+		const bare = await userTextFor({}, undefined, "merge the auth reflections");
+
+		expect(instructed.systemPrompt).toBe(plain.systemPrompt);
+		const block = instructed.userText.slice(`${PROJECT}\n\n`.length, instructed.userText.indexOf("CURRENT REFLECTIONS:"));
+		expect(block).toMatch(/^USER INSTRUCTION \([^\n]*overrides[^\n]*\):\nmerge the auth reflections\n\n$/);
+		expect(instructed.userText).toBe(`${PROJECT}\n\n${block}${plain.userText.slice(`${PROJECT}\n\n`.length)}`);
+		expect(bare.userText.startsWith("USER INSTRUCTION (")).toBe(true);
+		expect((await userTextFor({}, PROJECT, "")).userText).toBe(plain.userText);
 	});
 });

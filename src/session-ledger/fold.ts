@@ -64,7 +64,7 @@ export function emptyReflectionRetirementState(): ReflectionRetirementState {
 
 /**
  * Retire each id; the first retirement that names a replacement wins. A retirement kind is kept per id, and
- * a permanent retirement (any kind but "project-instructions" or "promoted", or none) is never downgraded to a reversible one.
+ * a permanent retirement (any kind but "project-instructions", or none) is never downgraded to a reversible one.
  */
 export function applyReflectionRetirement(
 	data: Pick<ReflectionsDroppedEntryData, "reflectionIds" | "replacedBy" | "kind">,
@@ -81,13 +81,10 @@ export function applyReflectionRetirement(
 	}
 }
 
-/**
- * Whether the id is retired only because project instructions cover it (or it was promoted into them),
- * so a later recording re-activates it.
- */
+/** Whether the id is retired only because project instructions cover it, so a later recording re-activates it. */
 export function isReversiblyRetired(reflectionId: string, state: Pick<ReflectionRetirementState, "reflectionRetirementKind">): boolean {
 	const kind = state.reflectionRetirementKind.get(reflectionId);
-	return kind === "project-instructions" || kind === "promoted";
+	return kind === "project-instructions";
 }
 
 /** A recording re-activates reversibly retired ids; other retirements are permanent. */
@@ -109,7 +106,7 @@ function isCustomEntry(entry: Entry, customType: string): boolean {
  * Unknown custom entries, old V2 entries, invalid V3-shaped data, and compaction details are ignored.
  * Observations and reflections use first-valid-record-wins semantics. Drops and reflection retirements
  * are tombstones and are retained even when the id is unknown at the time of folding. The only thing that
- * un-retires is a later recording of an id retired with kind "project-instructions" or "promoted".
+ * un-retires is a later recording of an id retired with kind "project-instructions".
  * The first retirement that names a replacement wins.
  */
 export function foldLedger(entries: Entry[], options: FoldLedgerOptions = {}): FoldedLedger {

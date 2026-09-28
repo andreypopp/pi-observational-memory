@@ -70,16 +70,6 @@ describe("reflection review agent", () => {
 		expect(systemPrompt).toContain("Never invent");
 	});
 
-	it("never offers the \"promoted\" retirement kind, which belongs to /om:promote", async () => {
-		let schemaText = "";
-		const loop = fakeAgentLoop((_prompts, context) => {
-			schemaText = JSON.stringify(context.tools[0].parameters);
-		});
-		await runReflectionReview({ ...baseArgs(), agentLoop: loop });
-		expect(schemaText).toContain("project-instructions");
-		expect(schemaText).not.toContain("promoted");
-	});
-
 	it("returns undefined when the model changes nothing", async () => {
 		const { result } = await review([]);
 		expect(result).toBeUndefined();
@@ -196,6 +186,27 @@ describe("reflection review agent", () => {
 			expect(texts[0]).toBe(`${PROJECT}\n\n${texts[1]}`);
 			expect(texts[1].startsWith("CURRENT REFLECTIONS:\n")).toBe(true);
 			expect(texts[2]).toBe(texts[1]);
+		});
+
+		it("puts the user instruction right after the project context and is unchanged without one", async () => {
+			const texts: string[] = [];
+			const systems: string[] = [];
+			const loop = fakeAgentLoop((prompts, context) => {
+				texts.push(prompts[0].content[0].text);
+				systems.push(context.messages[0]?.content ?? "");
+			});
+
+			await runReflectionReview({ ...baseArgs(), projectContext: PROJECT, agentLoop: loop });
+			await runReflectionReview({ ...baseArgs(), projectContext: PROJECT, userInstruction: "keep only rules", agentLoop: loop });
+			await runReflectionReview({ ...baseArgs(), userInstruction: "keep only rules", agentLoop: loop });
+			await runReflectionReview({ ...baseArgs(), projectContext: PROJECT, userInstruction: "", agentLoop: loop });
+
+			const rest = texts[0].slice(`${PROJECT}\n\n`.length);
+			expect(texts[1]).toMatch(/^PROJECT INSTRUCTIONS[^]*\n\nUSER INSTRUCTION \([^\n]*\):\nkeep only rules\n\nCURRENT REFLECTIONS:/);
+			expect(texts[1].endsWith(`keep only rules\n\n${rest}`)).toBe(true);
+			expect(texts[2].startsWith("USER INSTRUCTION (")).toBe(true);
+			expect(texts[3]).toBe(texts[0]);
+			expect(new Set(systems).size).toBe(1);
 		});
 
 		it("tells the model to retire reflections covered by project instructions with that kind", async () => {

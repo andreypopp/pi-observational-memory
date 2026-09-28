@@ -1,25 +1,18 @@
-import { basename } from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import { debugLog } from "../debug-log.js";
 import { runReflectPass } from "../hooks/compaction-hook.js";
 import { refreshProjectContextFromCommand } from "../hooks/project-context.js";
-import { parsePromotedMemory, readPromotedMemory } from "../project-memory/memory-file.js";
-import { buildGroundPromotePlan } from "../project-memory/ground.js";
-import { displayPath, resolvePromoteTarget } from "../project-memory/target.js";
 import {
 	emptyReflectReport,
+	instructionLine,
 	renderGroundReport,
-	type GroundPromoteOutcome,
 	type GroundingRequest,
 	type PassProgressDetail,
 	type PassStage,
 	type ReflectRequest,
 } from "../reflect-report.js";
-import { isBusy, type Runtime } from "../runtime.js";
-import { foldLedger, type Entry } from "../session-ledger/index.js";
-import { commandNotify, type Notify } from "./notify.js";
-import { isNothingToCompact } from "./reflect.js";
-import { confirmAndApplyPlan } from "./promote.js";
+import { compactionBusy, type Runtime } from "../runtime.js";
+import { commandNotify } from "./notify.js";
+import { isNothingToCompact, parseInstruction } from "./reflect.js";
 import { statusWidget, type StatusWidget } from "./status-widget.js";
 
 export const GROUND_STATUS_WIDGET = "om-ground";
@@ -50,7 +43,6 @@ type GroundProgress = {
  */
 function groundProgress(status: StatusWidget, grounding: GroundingRequest): GroundProgress {
 	const startedAt = Date.now();
-	const memoryFileName = basename(grounding.target.memoryPath);
 	let spinner = false;
 	let text: (() => string) | undefined;
 	let timer: ReturnType<typeof setInterval> | undefined;
@@ -62,8 +54,7 @@ function groundProgress(status: StatusWidget, grounding: GroundingRequest): Grou
 		stage(stage, detail) {
 			if (stage === "review") {
 				const reflections = detail?.reflections ?? 0;
-				const lines = grounding.parsed.lines.length;
-				text = () => `checking ${reflections} reflection${reflections === 1 ? "" : "s"} and ${lines} ${memoryFileName} line${lines === 1 ? "" : "s"} against the repo… ${grounding.toolCalls} tool call${grounding.toolCalls === 1 ? "" : "s"},`;
+				text = () => `checking ${reflections} reflection${reflections === 1 ? "" : "s"} against the repo… ${grounding.toolCalls} tool call${grounding.toolCalls === 1 ? "" : "s"},`;
 			} else {
 				text = () => STAGE_LABELS[stage];
 			}
@@ -86,67 +77,10 @@ function groundProgress(status: StatusWidget, grounding: GroundingRequest): Grou
 	};
 }
 
-/**
- * After the pass: turn the block revisions into a plan against the live branch and the file as it is
- * now, preview it, and apply it on confirmation, like /om:promote. Without UI it only prints the preview.
- */
-async function applyLineRevisions(
-	pi: ExtensionAPI,
-	runtime: Runtime,
-	ctx: ExtensionCommandContext,
-	grounding: GroundingRequest,
-	notify: Notify,
-	status: StatusWidget,
-): Promise<GroundPromoteOutcome> {
-	if (grounding.lineRevisions.length === 0) return { rewritten: 0, removed: 0, status: "no changes" };
-	runtime.promoteInFlight = true;
-	try {
-		const entries = ctx.sessionManager.getBranch() as Entry[];
-		const built = buildGroundPromotePlan({
-			target: grounding.target,
-			reviewedLines: grounding.parsed.lines,
-			revisions: grounding.lineRevisions,
-			folded: foldLedger(entries),
-			sessionId: ctx.sessionManager.getSessionId?.(),
-			promotedAt: new Date().toISOString(),
-			cwd: ctx.cwd,
-		});
-		const counts = { rewritten: grounding.lineRevisions.filter((r) => r.action === "rewrite").length, removed: grounding.lineRevisions.filter((r) => r.action === "remove").length };
-		if (!built.ok) return { ...counts, status: `not applied: ${built.reason}` };
-		const { plan } = built;
-		const outcome = (status: string): GroundPromoteOutcome => ({ rewritten: built.rewritten, removed: built.removed, status });
-		const reasons = grounding.lineRevisions.map((revision) => `- [${revision.id}] ${revision.action}: ${revision.reason}`);
-		const staleText = grounding.staleText.map((item) => `- ${item.path}: "${item.excerpt}" — ${item.reason}`);
-		const applied = await confirmAndApplyPlan(pi, runtime, ctx, notify, status, plan, {
-			ui: ctx.hasUI ? ctx.ui : undefined,
-			previewTitle: "Observational memory: /om:ground block preview",
-			previewDetails: [
-				"",
-				"Evidence:",
-				...reasons,
-				...(staleText.length > 0 ? ["", "Stale hand-written text (reported only, not edited):", ...staleText] : []),
-			],
-			noUiNote: "/om:ground needs an interactive session to apply block changes; nothing was written.",
-			confirmTitle: "Apply grounding to the promoted block?",
-			statusLabel: "Grounding",
-			doing: "grounding the block",
-		});
-		if (applied.status === "busy") return outcome("not applied: a compaction started meanwhile");
-		if (applied.status !== "applied") return outcome(applied.status);
-		const { result } = applied;
-		if (!result.ok) return outcome(`not applied: ${result.reason}`);
-		debugLog("ground.block_applied", { rewritten: built.rewritten, removed: built.removed, memoryFilesWritten: result.memoryFilesWritten.length, memoryFilesRemoved: result.memoryFilesRemoved.length });
-		return outcome(`applied to ${displayPath(plan.target.memoryPath, ctx.cwd)}`);
-	} finally {
-		status.hide();
-		runtime.promoteInFlight = false;
-	}
-}
-
 export function registerGroundCommand(pi: ExtensionAPI, runtime: Runtime): void {
 	pi.registerCommand("om:ground", {
-		description: "Check memory and the promoted .memory.md lines against the repository, then compact with a full memory fold",
-		handler: async (_args, ctx: ExtensionCommandContext) => {
+		description: "Check memory against the repository, then compact with a full memory fold; optional text is an instruction for the pass",
+		handler: async (args, ctx: ExtensionCommandContext) => {
 			runtime.ensureConfig(ctx.cwd);
 			const notify = commandNotify(ctx);
 
@@ -155,12 +89,11 @@ export function registerGroundCommand(pi: ExtensionAPI, runtime: Runtime): void 
 				notify("Observational memory: wait until the agent finishes its turn, then run /om:ground again", "warning");
 				return;
 			}
-			if (isBusy(runtime)) {
-				notify("Observational memory: a compaction or promotion is already running; try /om:ground again when it finishes", "warning");
+			if (compactionBusy(runtime)) {
+				notify("Observational memory: a compaction is already running; try /om:ground again when it finishes", "warning");
 				return;
 			}
-			const target = resolvePromoteTarget(ctx.cwd);
-			const parsed = parsePromotedMemory(readPromotedMemory(target.memoryPath) ?? "");
+			const instruction = parseInstruction(args);
 
 			// Holding compactInFlight keeps the auto-compaction trigger quiet until this compaction ends.
 			runtime.compactInFlight = true;
@@ -170,36 +103,26 @@ export function registerGroundCommand(pi: ExtensionAPI, runtime: Runtime): void 
 			}
 			refreshProjectContextFromCommand(runtime, ctx);
 			const grounding: GroundingRequest = {
-				target,
-				parsed,
 				toolCalls: 0,
 				reviewed: false,
 				reflectionsRetiredStale: 0,
 				reflectionsRewritten: 0,
-				lineRevisions: [],
 				staleText: [],
 			};
-			const status = statusWidget(ctx, GROUND_STATUS_WIDGET);
-			const progress = groundProgress(status, grounding);
-			const request: ReflectRequest = { report: emptyReflectReport(), grounding, onProgress: progress.stage };
+			const progress = groundProgress(statusWidget(ctx, GROUND_STATUS_WIDGET), grounding);
+			const request: ReflectRequest = { report: emptyReflectReport(), ...(instruction ? { instruction } : {}), grounding, onProgress: progress.stage };
 			runtime.reflectRequest = request;
 			const finish = () => {
 				progress.stop();
 				if (runtime.reflectRequest === request) runtime.reflectRequest = undefined;
 				runtime.compactInFlight = false;
 			};
-			const complete = async () => {
-				try {
-					const promoted = await applyLineRevisions(pi, runtime, ctx, grounding, notify, status);
-					notify(renderGroundReport(request.report, grounding, promoted), "info");
-				} catch (error) {
-					const message = error instanceof Error ? error.message : String(error);
-					debugLog("ground.error", { errorMessage: message });
-					notify(`Observational memory: /om:ground failed: ${message}`, "error");
-				}
-			};
+			const complete = () => notify(renderGroundReport(request.report, grounding, instruction), "info");
 			notify(
-				"Observational memory: grounding — checking memory against the repository, then compacting. This can take 5-15 minutes on a large session; the session shows compacting meanwhile and new prompts wait. Esc cancels.",
+				[
+					"Observational memory: grounding — checking memory against the repository, then compacting. This can take 5-15 minutes on a large session; the session shows compacting meanwhile and new prompts wait. Esc cancels.",
+					...instructionLine(instruction),
+				].join("\n"),
 				"info",
 			);
 
@@ -207,7 +130,7 @@ export function registerGroundCommand(pi: ExtensionAPI, runtime: Runtime): void 
 			ctx.compact({
 				onComplete: () => {
 					finish();
-					void complete();
+					complete();
 				},
 				onError: async (error: Error) => {
 					if (!request.report.started && isNothingToCompact(error)) {
@@ -224,7 +147,7 @@ export function registerGroundCommand(pi: ExtensionAPI, runtime: Runtime): void 
 							return;
 						}
 						finish();
-						await complete();
+						complete();
 						return;
 					}
 					finish();

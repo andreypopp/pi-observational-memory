@@ -59,7 +59,7 @@ recall and worker inputs).
 ## Project context for the reflector
 
 Both reflector calls (crystallize and review) get the session's context files as a `PROJECT INSTRUCTIONS` block at the top
-of the user message; observer and dropper never do. Sources, in order: `before_agent_start` snapshot, `/om:reflect`'s
+of the user message; observer and dropper never do. Sources, in order: `before_agent_start` snapshot, `/om:reflect`/`/om:ground`'s
 guarded `ctx.getSystemPromptOptions()` refresh, else Pi's exported `loadProjectContextFiles` (`src/hooks/project-context.ts`).
 No files or `projectContext: false` must leave worker inputs byte-for-byte unchanged. Review retirements carry a `kind`;
 `project-instructions` is the one reversible retirement: a later recording of the id re-activates it in fold, projections
@@ -74,27 +74,18 @@ consolidation lock. Every entry the pass writes is capped at `firstKeptEntryId` 
 then the hook full-folds the live branch. OM can only learn the cut inside `session_before_compact`, so the pass
 must stay in the hook.
 
-## /om:promote
-
-`src/commands/promote.ts` + `src/project-memory/` + `src/agents/promoter`. Writes only `.memory.md` (OM-owned: fixed
-header + `- [id] content` lines, rendered whole, deleted when empty; `project-memory/memory-file.ts`) at the repo root
-(main worktree root from a linked worktree, see `project-memory/target.ts`), never AGENTS.md, and adds `.memory/<id>.md`
-files, never rewriting existing ones; it removes the `<id>.md` files the new lines no longer reach (`reachableMemoryIds`,
-shown in the preview; git history keeps them). Promoted reflections are retired with kind `promoted`, reversible like
-`project-instructions` and never offered to the reviewer. Pi never loads `.memory.md`: OM's `before_agent_start` handler
-(`hooks/project-context.ts`) pushes a fresh read onto `event.systemPromptOptions.contextFiles` and the snapshot filters it
-out; `resolveProjectContextFiles` appends the same fresh read for workers. Off with `promotedMemory: false` or `-nc`.
-Recall falls back to the nearest `.memory/` only for ids not on the branch; with no `.memory.md` lines and no store,
-recall/status/prompt/worker inputs must stay byte-for-byte unchanged. Tests use temp dirs only.
-
 ## /om:ground
 
 `src/commands/ground.ts`: an /om:reflect request carrying `grounding` + `onProgress`; the pipeline passes them only to the
-review (`runReviewStep`), which then gets Pi's read/grep/find/ls/bash tools at the promote target root
-(`agents/reviewer/repo-tools.ts`, bash timeout-capped, prompt-only read-only), `GROUNDING_SYSTEM`, the `.memory.md` lines and
-`revise_promoted_block`. `.memory.md` revisions are applied after the compaction via `/om:promote`'s plan/apply
-(`project-memory/ground.ts`). `reason` on `om.reflections.dropped` is written only by grounding; fold/projection ignore
-it, recall shows it. Without `grounding`, review inputs, schema and ledger entries must stay byte-for-byte unchanged.
+review (`runReviewStep`), which then gets Pi's read/grep/find/ls/bash tools at `ctx.cwd` (`agents/reviewer/repo-tools.ts`,
+bash timeout-capped, prompt-only read-only), `GROUNDING_SYSTEM` and `report_stale_instructions` (reports stale context-file
+text, never edits it). `reason` on `om.reflections.dropped` is written only by grounding; fold/projection ignore it, recall
+shows it. Without `grounding`, review inputs, schema and ledger entries must stay byte-for-byte unchanged. Retirements
+with the removed kind `promoted` fail validation and are ignored everywhere, so those reflections are active.
+
+`/om:reflect <text>` and `/om:ground <text>` carry the trimmed text as `ReflectRequest.instruction`; both reflector calls get
+it as a `USER INSTRUCTION` block after PROJECT INSTRUCTIONS (`agents/user-instruction.ts`, whose header holds the rule, so
+system prompts never change). Observer and dropper never get it; blank args leave every input byte-for-byte unchanged.
 
 ## Maintaining this file
 

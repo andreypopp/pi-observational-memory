@@ -7,7 +7,6 @@ import { runReflectionReview } from "../src/agents/reviewer/agent.js";
 import { GROUNDING_SYSTEM, REVIEW_SYSTEM } from "../src/agents/reviewer/prompts.js";
 import { createRepoTools, groundingBashTimeout } from "../src/agents/reviewer/repo-tools.js";
 import { hashId } from "../src/ids.js";
-import { parsePromotedMemory, renderPromotedLine, renderPromotedMemory } from "../src/project-memory/memory-file.js";
 import { observation, reflection } from "./fixtures/session.js";
 
 function fakeAgentLoop(handler: (prompts: any[], context: any, config: any) => Promise<void> | void): any {
@@ -22,13 +21,6 @@ function fakeAgentLoop(handler: (prompts: any[], context: any, config: any) => P
 
 const OLD_A = reflection("aaaaaaaaaaa1", ["aaaaaaaaaaaa"], { content: "Config lives in foo.json" });
 const NEW_C = reflection("aaaaaaaaaaa3", ["dddddddddddd"], { content: "Tests run with jest" });
-const LINE_P = { id: "bbbbbbbbbbb1", content: "Build with make" };
-const LINE_Q = { id: "bbbbbbbbbbb2", content: "Lint with eslint" };
-const HAND = "Hand-written block line";
-
-function blockLines() {
-	return parsePromotedMemory(renderPromotedMemory([renderPromotedLine(LINE_P.id, LINE_P.content), renderPromotedLine(LINE_Q.id, LINE_Q.content), `- ${HAND}`])).lines;
-}
 
 function repoTool(name: string, execute = vi.fn(async () => ({ content: [{ type: "text", text: `${name} output` }], details: {} }))) {
 	return { name, label: name, description: name, parameters: {}, execute } as any;
@@ -51,10 +43,6 @@ function grounding(overrides: Record<string, unknown> = {}) {
 	return {
 		tools: [repoTool("read"), repoTool("bash")],
 		root: "/repo",
-		memoryPath: "/repo/.memory.md",
-		promotedLines: blockLines(),
-		lineRecords: new Map([[LINE_P.id, { id: LINE_P.id, content: LINE_P.content, supportingObservationIds: ["eeeeeeeeeeee"] }]]),
-		maxPromotedTokens: 1500,
 		...overrides,
 	};
 }
@@ -76,31 +64,45 @@ async function review(calls: [string, unknown][], overrides: Record<string, unkn
 }
 
 describe("grounding review", () => {
-	it("leaves the normal review without tools, block lines or the grounding prompt", async () => {
+	it("leaves the normal review without tools or the grounding prompt", async () => {
 		const { seen } = await review([]);
 
 		expect(seen.context.tools.map((tool: any) => tool.name)).toEqual(["tidy_reflections"]);
 		expect(seen.context.messages[0].content).toBe(REVIEW_SYSTEM);
-		expect(seen.prompts[0].content[0].text).not.toContain("PROMOTED LINES");
 		expect(seen.prompts[0].content[0].text).not.toContain("REPOSITORY");
 	});
 
-	it("gets the repo tools, the promoted lines and the grounding prompt section", async () => {
+	it("gets the repo tools, the full project instructions and the grounding prompt section", async () => {
 		const { seen } = await review([], { grounding: grounding(), projectContext: "PROJECT INSTRUCTIONS:\n\nrules" });
 
-		expect(seen.context.tools.map((tool: any) => tool.name)).toEqual(["tidy_reflections", "revise_promoted_block", "read", "bash"]);
+		expect(seen.context.tools.map((tool: any) => tool.name)).toEqual(["tidy_reflections", "report_stale_instructions", "read", "bash"]);
 		expect(seen.context.messages[0].content).toBe(`${REVIEW_SYSTEM}\n\n${GROUNDING_SYSTEM}`);
+		expect(GROUNDING_SYSTEM).not.toMatch(/promot/i);
 		const text: string = seen.prompts[0].content[0].text;
-		expect(text.startsWith("PROJECT INSTRUCTIONS:")).toBe(true);
-		expect(text).toContain(`.memory.md PROMOTED LINES (/repo/.memory.md):\n[${LINE_P.id}] Build with make\n[${LINE_Q.id}] Lint with eslint\n[${hashId(HAND)}] ${HAND}`);
+		expect(text.startsWith("PROJECT INSTRUCTIONS:\n\nrules\n\nCURRENT REFLECTIONS:")).toBe(true);
 		expect(text).toContain("REPOSITORY: /repo");
 	});
 
-	it("runs with no active reflections when the block has lines", async () => {
-		const { result, seen } = await review([], { reflections: [], grounding: grounding() });
+	it("puts the user instruction right after the project instructions", async () => {
+		const { seen } = await review([], { grounding: grounding(), projectContext: "PROJECT INSTRUCTIONS:\n\nrules", userInstruction: "check only the config facts" });
+
+		const text: string = seen.prompts[0].content[0].text;
+		expect(text).toMatch(/^PROJECT INSTRUCTIONS:\n\nrules\n\nUSER INSTRUCTION \([^\n]*\):\ncheck only the config facts\n\nCURRENT REFLECTIONS:/);
+		expect(seen.context.messages[0].content).toBe(`${REVIEW_SYSTEM}\n\n${GROUNDING_SYSTEM}`);
+	});
+
+	it("runs with no active reflections when there are project instructions to check", async () => {
+		const { result, seen } = await review([], { reflections: [], grounding: grounding(), projectContext: "PROJECT INSTRUCTIONS:\n\nrules" });
 
 		expect(seen.context).toBeDefined();
-		expect(result).toEqual({ replacements: [], retirements: [], grounding: { toolCalls: 0, lineRevisions: [], staleText: [] } });
+		expect(result).toEqual({ replacements: [], retirements: [], grounding: { toolCalls: 0, staleText: [] } });
+	});
+
+	it("skips the review with no active reflections and no project instructions", async () => {
+		const { result, seen } = await review([], { reflections: [], grounding: grounding() });
+
+		expect(seen.context).toBeUndefined();
+		expect(result).toBeUndefined();
 	});
 
 	it("counts repo tool calls and reports each running total", async () => {
@@ -145,60 +147,27 @@ describe("grounding review", () => {
 		expect(result).toEqual({ replacements: [], retirements: [{ reflectionIds: [OLD_A.id], kind: "stale" }] });
 	});
 
-	describe("revise_promoted_block", () => {
-		it("collects rewrites, removals and stale-text reports in block order", async () => {
-			const { result, replies } = await review([
-				["revise_promoted_block", {
-					revise: [
-						{ id: hashId(HAND), action: "remove", reason: "no such file" },
-						{ id: LINE_P.id, action: "rewrite", content: "Build with just", reason: "justfile:1" },
-					],
-					report: [{ path: "/repo/AGENTS.md", excerpt: "npm run old", reason: "package.json has no old script" }],
-				}],
+	describe("report_stale_instructions", () => {
+		it("collects stale-text reports and never offers line edits", async () => {
+			const { result, replies, seen } = await review([
+				["report_stale_instructions", { report: [{ path: "/repo/AGENTS.md", excerpt: "npm run old", reason: "package.json has no old script" }] }],
 			], { grounding: grounding() });
 
-			expect(replies[0]).toBe("Recorded 2 line decisions and 1 report.");
+			expect(replies[0]).toBe("Recorded 1 report.");
+			expect(Object.keys(seen.context.tools[1].parameters.properties)).toEqual(["report"]);
 			expect(result?.grounding).toEqual({
 				toolCalls: 0,
-				lineRevisions: [
-					{ id: LINE_P.id, action: "rewrite", content: "Build with just", reason: "justfile:1" },
-					{ id: hashId(HAND), action: "remove", reason: "no such file" },
-				],
 				staleText: [{ path: "/repo/AGENTS.md", excerpt: "npm run old", reason: "package.json has no old script" }],
 			});
 		});
 
-		it("rejects unknown or repeated ids, missing evidence, empty reasons and colliding content", async () => {
-			const revise = (item: Record<string, unknown>): [string, unknown] => ["revise_promoted_block", { revise: [item] }];
+		it("rejects items without a path, an excerpt or a reason", async () => {
 			const { result, replies } = await review([
-				revise({ id: "ffffffffffff", action: "remove", reason: "x" }),
-				revise({ id: LINE_Q.id, action: "rewrite", content: "Lint with biome", reason: "biome.json" }),
-				revise({ id: LINE_P.id, action: "rewrite", content: HAND, reason: "dup" }),
-				revise({ id: LINE_P.id, action: "rewrite", content: "two\nlines", reason: "x" }),
-				revise({ id: LINE_P.id, action: "remove", reason: "  " }),
-				revise({ id: LINE_P.id, action: "rewrite", content: "Retired fact", reason: "x" }),
-				revise({ id: LINE_P.id, action: "remove", reason: "gone" }),
-				revise({ id: LINE_P.id, action: "remove", reason: "again" }),
-			], { grounding: grounding(), retiredReflectionIds: new Set([hashId("Retired fact")]) });
+				["report_stale_instructions", { report: [{ path: "/repo/AGENTS.md", excerpt: " ", reason: "x" }] }],
+			], { grounding: grounding() });
 
-			expect(replies[0]).toContain("ffffffffffff is not a promoted block line");
-			expect(replies[1]).toContain(`${LINE_Q.id} has no recorded evidence`);
-			expect(replies[2]).toContain(`matches ${hashId(HAND)}, which already exists`);
-			expect(replies[3]).toContain("content must be a non-empty single line");
-			expect(replies[4]).toContain("give the evidence as reason");
-			expect(replies[5]).toContain("matches the line itself or a retired reflection");
-			expect(replies[6]).toBe("Recorded 1 line decision and 0 reports.");
-			expect(replies[7]).toContain(`${LINE_P.id} was already decided`);
-			expect(result?.grounding?.lineRevisions).toEqual([{ id: LINE_P.id, action: "remove", reason: "gone" }]);
-		});
-
-		it("rejects rewrites that push the block over its budget", async () => {
-			const { result, replies } = await review([
-				["revise_promoted_block", { revise: [{ id: LINE_P.id, action: "rewrite", content: `Build with make ${"x".repeat(400)}`, reason: "Makefile" }] }],
-			], { grounding: grounding({ maxPromotedTokens: 80 }) });
-
-			expect(replies[0]).toContain("over the budget of 80");
-			expect(result?.grounding?.lineRevisions).toEqual([]);
+			expect(replies[0]).toContain("report items need a path, an excerpt and a reason");
+			expect(result?.grounding?.staleText).toEqual([]);
 		});
 	});
 });
@@ -211,7 +180,7 @@ describe("grounding repo tools", () => {
 	});
 	afterEach(() => rmSync(root, { recursive: true, force: true }));
 
-	it("are Pi's read, grep, find, ls and bash, rooted at the project root", async () => {
+	it("are Pi's read, grep, find, ls and bash, rooted at the given directory", async () => {
 		const tools = createRepoTools(root);
 		expect(tools.map((tool) => tool.name)).toEqual(["read", "grep", "find", "ls", "bash"]);
 

@@ -32,11 +32,10 @@ type ReflectionLedgerLocation = {
 	recordIndex: number;
 };
 
-/** Ledger location fields are absent for records recalled from `.memory/`. */
 export type RecalledObservation = {
 	observation: Observation;
-	observationEntryId?: string;
-	observationRecordIndex?: number;
+	observationEntryId: string;
+	observationRecordIndex: number;
 	status: "active" | "dropped";
 	sourceEntryIds: string[];
 	sourceEntries: Entry[];
@@ -46,8 +45,8 @@ export type RecalledObservation = {
 
 export type RecalledReflection = {
 	reflection: Reflection;
-	reflectionEntryId?: string;
-	reflectionRecordIndex?: number;
+	reflectionEntryId: string;
+	reflectionRecordIndex: number;
 	status: "active" | "retired";
 	/** Replacing reflection id recorded by the retirement, when known. */
 	replacedBy?: string;
@@ -160,8 +159,7 @@ function indexLedger(entries: Entry[]): {
 	return { observations, reflections, droppedIds, retirement, retirementReasons };
 }
 
-/** Resolve an observation's source entries; `location` is its ledger position, absent for `.memory/` records. */
-export function resolveObservationSources(entries: Entry[], observation: Observation, location?: ObservationLedgerLocation): RecalledObservation {
+function resolveObservationSources(entries: Entry[], observation: Observation, location: ObservationLedgerLocation): RecalledObservation {
 	const sourceEntryIds = uniqueStrings(observation.sourceEntryIds);
 	const byId = new Map(entries.map((entry) => [entry.id, entry]));
 	const sourceEntries: Entry[] = [];
@@ -183,7 +181,8 @@ export function resolveObservationSources(entries: Entry[], observation: Observa
 
 	return {
 		observation,
-		...(location ? { observationEntryId: location.entryId, observationRecordIndex: location.recordIndex } : {}),
+		observationEntryId: location.entryId,
+		observationRecordIndex: location.recordIndex,
 		status: "active",
 		sourceEntryIds,
 		sourceEntries,

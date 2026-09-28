@@ -103,23 +103,22 @@ describe("reflection retirement kind", () => {
 		expect(c.status === "found" && c.reflections[0]).not.toHaveProperty("retirementKind");
 	});
 
-	it("treats \"promoted\" retirements as reversible: out of active memory, re-activated by a later recording", () => {
-		const base = [
+	it("ignores retirements with the removed \"promoted\" kind, so those reflections stay active", () => {
+		const entries = [
 			textCustomMessage("raw-1", "a".repeat(40)),
 			observationsRecordedEntry("om-obs", { observations: [observation("bbbbbbbbbbbb")], coversUpToId: "raw-1" }),
-			reflectionsRecordedEntry("om-ref", { reflections: [reflection(REF_A, ["bbbbbbbbbbbb"])], coversUpToId: "raw-1" }),
-			reflectionsDroppedEntry("om-promoted", { reflectionIds: [REF_A], kind: "promoted", coversUpToId: "raw-1" }),
+			reflectionsRecordedEntry("om-ref", { reflections: [reflection(REF_A, ["bbbbbbbbbbbb"]), reflection(REF_B, ["bbbbbbbbbbbb"])], coversUpToId: "raw-1" }),
+			reflectionsDroppedEntry("om-promoted", { reflectionIds: [REF_A, REF_B], kind: "promoted", coversUpToId: "raw-1" }),
 		];
-		expect(isReflectionsDroppedData({ reflectionIds: [REF_A], kind: "promoted", coversUpToId: "raw-1" })).toBe(true);
-		const promoted = foldLedger(base);
-		expect(promoted.activeReflections).toEqual([]);
-		expect(promoted.reflectionRetirementKind.get(REF_A)).toBe("promoted");
-		expect(promoted.knownReflectionIds.has(REF_A)).toBe(false);
-		const recalled = recallMemorySources(base as any, REF_A);
-		expect(recalled.status === "found" && recalled.reflections[0]).toMatchObject({ status: "retired", retirementKind: "promoted" });
+		expect(isReflectionsDroppedData({ reflectionIds: [REF_A], kind: "promoted", coversUpToId: "raw-1" })).toBe(false);
 
-		const again = [...base, reflectionsRecordedEntry("om-ref-again", { reflections: [reflection(REF_A, ["bbbbbbbbbbbb"])], coversUpToId: "raw-1" })];
-		expect(foldLedger(again).activeReflections.map((r) => r.id)).toEqual([REF_A]);
-		expect(fullProjection(again).reflections.map((r) => r.id)).toEqual([REF_A]);
+		const folded = foldLedger(entries);
+		expect(folded.activeReflections.map((r) => r.id)).toEqual([REF_A, REF_B]);
+		expect(folded.retiredReflectionIds.size).toBe(0);
+		expect(folded.reflectionRetirementKind.size).toBe(0);
+		expect(fullProjection(entries).reflections.map((r) => r.id)).toEqual([REF_A, REF_B]);
+		const recalled = recallMemorySources(entries as any, REF_A);
+		expect(recalled.status === "found" && recalled.reflections[0]).toMatchObject({ status: "active" });
+		expect(recalled.status === "found" && recalled.reflections[0]).not.toHaveProperty("retirementKind");
 	});
 });

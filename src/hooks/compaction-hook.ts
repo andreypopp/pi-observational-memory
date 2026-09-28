@@ -50,6 +50,7 @@ export async function runReflectPass(
 			coverageLimitId: cut?.firstKeptEntryId,
 			signal: cut?.signal,
 			report: request.report,
+			...(request.instruction ? { instruction: request.instruction } : {}),
 			...(request.grounding ? { grounding: request.grounding } : {}),
 			...(request.onProgress ? { onProgress: request.onProgress } : {}),
 		}));

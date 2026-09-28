@@ -1,5 +1,4 @@
 import { agentLoop, type AgentContext, type AgentLoopConfig, type AgentTool } from "@earendil-works/pi-agent-core";
-import { basename } from "node:path";
 import type { Message, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { Type } from "@earendil-works/pi-ai";
 import type { Static } from "typebox";
@@ -7,10 +6,11 @@ import { debugLog } from "../../debug-log.js";
 import { hashId } from "../../ids.js";
 import { logAgentStreamError } from "../stream-errors.js";
 import { withProjectContext } from "../project-context.js";
-import { joinOrEmpty, normalizeContent } from "../worker-format.js";
+import { withUserInstruction } from "../user-instruction.js";
 import { workerMessages } from "../worker-prompt.js";
 import { resolveWorkerStreamSimple, type StreamableModelRegistry, type WorkerStreamSimple } from "../worker-stream.js";
 import { AGENT_LOOP_MAX_TOKENS, boundedMaxTokens } from "../../model-budget.js";
+import { truncateRecordContent } from "../../serialize.js";
 import { estimateStringTokens } from "../../tokens.js";
 import {
 	isReflectionRetirementKind,
@@ -19,7 +19,7 @@ import {
 	type Reflection,
 	type ReflectionRetirementKind,
 } from "../../session-ledger/index.js";
-import { countedTools, createReviseBlockTool, type GroundingReviewArgs, type GroundingReviewResult } from "./grounding.js";
+import { countedTools, createReportStaleTool, type GroundingReviewArgs, type GroundingReviewResult } from "./grounding.js";
 import { GROUNDING_SYSTEM, REVIEW_SYSTEM } from "./prompts.js";
 
 interface RunReflectionReviewArgs {
@@ -38,6 +38,8 @@ interface RunReflectionReviewArgs {
 	observations: Observation[];
 	/** Rendered PROJECT INSTRUCTIONS block, prepended to the user message; "" or absent leaves it unchanged. */
 	projectContext?: string;
+	/** /om:reflect or /om:ground instruction text, placed after PROJECT INSTRUCTIONS; absent leaves the message unchanged. */
+	userInstruction?: string;
 	signal?: AbortSignal;
 	agentLoop?: typeof agentLoop;
 	maxTurns?: number;
@@ -83,7 +85,17 @@ const TidyReflectionsSchema = Type.Object({
 
 type TidyReflectionsArgs = Static<typeof TidyReflectionsSchema>;
 
-export function reflectionToReviewLine(reflection: Reflection, recordedAt: string | undefined, isNew: boolean): string {
+function joinOrEmpty(items: string[]): string {
+	return items.length ? items.join("\n") : "(none yet)";
+}
+
+function normalizeContent(content: string): string | undefined {
+	const normalized = truncateRecordContent(content.trim());
+	if (!normalized || /\r|\n/.test(normalized)) return undefined;
+	return normalized;
+}
+
+function reflectionToReviewLine(reflection: Reflection, recordedAt: string | undefined, isNew: boolean): string {
 	return `[${reflection.id}] (recorded ${recordedAt ?? "unknown"})${isNew ? " [new]" : ""} ${reflection.content}`;
 }
 
@@ -93,7 +105,8 @@ function unionSupportingIds(reflections: readonly Reflection[]): string[] {
 
 export async function runReflectionReview(args: RunReflectionReviewArgs): Promise<ReflectionReviewResult | undefined> {
 	const { model, apiKey, headers, env, reflections, newReflectionIds, retiredReflectionIds, recordedAt, observations, signal, grounding } = args;
-	if (reflections.length === 0 && !(grounding && grounding.promotedLines.length > 0)) return undefined;
+	// A grounding review also checks the project instructions, so it runs with no active reflections too.
+	if (reflections.length === 0 && !(grounding && args.projectContext)) return undefined;
 
 	const activeById = new Map(reflections.map((reflection) => [reflection.id, reflection]));
 	// A grounding review may also retire a [new] reflection the repository contradicts, and keeps the model's reasons.
@@ -201,28 +214,23 @@ export async function runReflectionReview(args: RunReflectionReviewArgs): Promis
 	const reflectionsText = `CURRENT REFLECTIONS:\n${joinOrEmpty(reflectionLines)}`;
 	const observationsText = `RECENT OBSERVATIONS:\n${joinOrEmpty(observations.map(observationToSummaryLine))}`;
 	let toolCalls = 0;
-	const reviseBlock = grounding
-		? createReviseBlockTool({
-			promotedLines: grounding.promotedLines,
-			lineRecords: grounding.lineRecords,
-			activeReflectionIds: new Set(activeById.keys()),
-			retiredReflectionIds,
-			maxPromotedTokens: grounding.maxPromotedTokens,
-		})
-		: undefined;
-	const userText = grounding
-		? withProjectContext(
-			args.projectContext,
-			`${reflectionsText}\n\n${basename(grounding.memoryPath)} PROMOTED LINES (${grounding.memoryPath}):\n${joinOrEmpty(grounding.promotedLines.map((line) => `[${line.id}] ${line.content}`))}\n\n${observationsText}\n\nREPOSITORY: ${grounding.root}\n\nCheck the reflections and promoted lines against the repository, then record decisions. If nothing needs to change, do not call tidy_reflections or revise_promoted_block.`,
-		)
-		: withProjectContext(args.projectContext, `${reflectionsText}\n\n${observationsText}\n\nReview the reflections. If none needs to change, do not call the tool.`);
+	const reportStale = grounding ? createReportStaleTool() : undefined;
+	const userText = withProjectContext(
+		args.projectContext,
+		withUserInstruction(
+			args.userInstruction,
+			grounding
+				? `${reflectionsText}\n\n${observationsText}\n\nREPOSITORY: ${grounding.root}\n\nCheck the reflections against the repository, then record decisions. If nothing needs to change, do not call tidy_reflections or report_stale_instructions.`
+				: `${reflectionsText}\n\n${observationsText}\n\nReview the reflections. If none needs to change, do not call the tool.`,
+		),
+	);
 	const { system, prompts } = workerMessages(model, grounding ? `${REVIEW_SYSTEM}\n\n${GROUNDING_SYSTEM}` : REVIEW_SYSTEM, userText);
 	const context: AgentContext = {
 		messages: system,
 		tools: grounding
 			? [
 				tidyReflections as AgentTool<any>,
-				reviseBlock!.tool as AgentTool<any>,
+				reportStale!.tool as AgentTool<any>,
 				...countedTools(grounding.tools, () => grounding.onToolCall?.(++toolCalls)),
 			]
 			: [tidyReflections as AgentTool<any>],
@@ -289,7 +297,7 @@ export async function runReflectionReview(args: RunReflectionReviewArgs): Promis
 		rejectedCount,
 		...(grounding ? { groundingToolCalls: toolCalls } : {}),
 	});
-	// A grounding review always reports back, even with no retirements: its block decisions and tool calls count too.
-	if (grounding) return { replacements: Array.from(replacements.values()), retirements, grounding: { toolCalls, ...reviseBlock!.result() } };
+	// A grounding review always reports back, even with no retirements: its stale-text reports and tool calls count too.
+	if (grounding) return { replacements: Array.from(replacements.values()), retirements, grounding: { toolCalls, staleText: reportStale!.result() } };
 	return retirements.length > 0 ? { replacements: Array.from(replacements.values()), retirements } : undefined;
 }
