@@ -131,6 +131,20 @@ describe("V3 config", () => {
 		expect(loadConfig(cwd, {})).toEqual(DEFAULTS);
 	});
 
+	it("parses a reflector model and ignores invalid values", () => {
+		writeJson(join(cwd, ".pi", "settings.json"), {
+			"observational-memory": { reflectorModel: { provider: "claude-bridge", id: "claude-opus-5-5", thinking: "medium" } },
+		});
+		expect(loadConfig(cwd, {})).toMatchObject({
+			reflectorModel: { provider: "claude-bridge", id: "claude-opus-5-5", thinking: "medium" },
+		});
+
+		writeJson(join(cwd, ".pi", "settings.json"), {
+			"observational-memory": { reflectorModel: { provider: "claude-bridge", id: "" } },
+		});
+		expect(loadConfig(cwd, {})).toEqual(DEFAULTS);
+	});
+
 	it("ignores invalid V3 values", () => {
 		writeJson(join(cwd, ".pi", "settings.json"), {
 			"observational-memory": {

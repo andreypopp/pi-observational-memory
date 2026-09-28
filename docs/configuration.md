@@ -75,6 +75,10 @@ You can omit everything. Defaults work for ordinary sessions, and if `model` is 
 | `fallbackModel.provider` | string | unset | Provider name in Pi's model registry. Required when `fallbackModel` is set. |
 | `fallbackModel.id` | string | unset | Model id in Pi's model registry. Required when `fallbackModel` is set. |
 | `fallbackModel.thinking` | enum | unset; falls back to `model.thinking` then `low` | Optional reasoning/thinking level used when the fallback is active. |
+| `reflectorModel` | object | unset | Optional model for the reflector stage only. |
+| `reflectorModel.provider` | string | unset | Provider name in Pi's model registry. Required when `reflectorModel` is set. |
+| `reflectorModel.id` | string | unset | Model id in Pi's model registry. Required when `reflectorModel` is set. |
+| `reflectorModel.thinking` | enum | unset; falls back to `model.thinking` then `low` | Optional reasoning/thinking level for reflector calls on `reflectorModel`. |
 | `showWorkerNotifications` | boolean | `true` | Shows routine observer, reflector, and dropper progress notifications. |
 | `passive` | boolean | `false` | Disables proactive background memory and auto-compaction triggers. |
 | `debugLog` | boolean | `false` | Writes best-effort per-session extension debug events to Pi's agent directory. |
@@ -212,6 +216,23 @@ Once the fallback resolves, it is reused for the rest of the consolidation pass,
 If the fallback advertises a smaller context window than the primary, the observer chunk is capped to the smaller window before the run, so a fallback retry is never handed a prompt sized only for a larger primary. `fallbackModel.thinking`, when set, is the thinking level used for the fallback call.
 
 `provider` and `id` must both be non-empty strings, exactly as for `model`. A `fallbackModel` identical to the effective primary memory model — the configured `model` when it resolves, otherwise the session model — is rejected as a misconfiguration. A fallback that also fails leaves the existing skip/fail-safe behavior intact: no memory is invented, coverage does not advance, and the failure is surfaced (worker failure notification, `/om:status`, debug log).
+
+## `reflectorModel`
+
+Default: unset, meaning the reflector uses the same model as the observer and dropper.
+
+Set `reflectorModel` to run only the reflector on a different model. Reflections are few and long-lived while observer runs are frequent, so a stronger reflector costs little:
+
+```json
+{
+  "observational-memory": {
+    "model": { "provider": "claude-bridge", "id": "claude-sonnet-5", "thinking": "medium" },
+    "reflectorModel": { "provider": "claude-bridge", "id": "claude-opus-5-5", "thinking": "medium" }
+  }
+}
+```
+
+It uses the same auth rules as `model`. When it is not in Pi's registry or has no usable credentials, the reflector uses the regular memory model (and `fallbackModel` after it), with one warning. When a reflector call on `reflectorModel` errors, it is retried once with `fallbackModel`, if one is configured.
 
 ## `showWorkerNotifications`
 

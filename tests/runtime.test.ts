@@ -361,6 +361,36 @@ describe("Runtime V3 behavior", () => {
 			expect(result).toEqual({ ok: true, model: fallback, apiKey: undefined, headers: undefined, env: undefined, baseUrl: undefined });
 		});
 
+		it("resolveReflectorModel reports unset and missing reflector models", async () => {
+			const runtime = new Runtime();
+			const registry = { find: vi.fn(() => undefined), getApiKeyAndHeaders: vi.fn(async () => ({ ok: true, apiKey: "k" })) };
+
+			await expect(runtime.resolveReflectorModel({ model: undefined, modelRegistry: registry, hasUI: false })).resolves.toEqual({
+				ok: false,
+				reason: "no reflector model configured",
+			});
+
+			runtime.config = { ...runtime.config, reflectorModel: { provider: "anthropic", id: "opus" } };
+			await expect(runtime.resolveReflectorModel({ model: undefined, modelRegistry: registry, hasUI: false })).resolves.toEqual({
+				ok: false,
+				reason: "reflector model anthropic/opus not found",
+			});
+		});
+
+		it("resolveReflectorModel applies the same auth rules as the primary path and marks the result", async () => {
+			const runtime = new Runtime();
+			const opus = { provider: "anthropic", id: "opus" };
+			runtime.config = { ...runtime.config, reflectorModel: { provider: "anthropic", id: "opus" } };
+			const registry = {
+				find: vi.fn(() => opus),
+				getApiKeyAndHeaders: vi.fn(async () => ({ ok: true, headers: { Authorization: "Bearer x" } })),
+			};
+
+			const result = await runtime.resolveReflectorModel({ model: undefined, modelRegistry: registry, hasUI: false });
+
+			expect(result).toEqual({ ok: true, model: opus, apiKey: undefined, headers: { Authorization: "Bearer x" }, reflectorModelUsed: true });
+		});
+
 		it("resolveFallbackModel applies the same auth rules as the primary path", async () => {
 			const runtime = new Runtime();
 			runtime.config = { ...runtime.config, model: { provider: "anthropic", id: "haiku" }, fallbackModel: { ...FALLBACK } };

@@ -69,6 +69,12 @@ export interface Config {
 	 * fallback that also fails leaves the existing skip/fail-safe behavior intact.
 	 */
 	fallbackModel?: ConfiguredModel;
+	/**
+	 * Optional model for the reflector stage only. When it cannot be resolved the
+	 * reflector uses the regular memory model (then `fallbackModel`), and a failed
+	 * reflector call is still retried once with `fallbackModel`.
+	 */
+	reflectorModel?: ConfiguredModel;
 	showWorkerNotifications: boolean;
 	passive: boolean;
 	debugLog: boolean;
@@ -231,6 +237,8 @@ function normalizeSettingsConfig(value: Record<string, unknown>): Partial<Config
 	if (model) normalized.model = model;
 	const fallbackModel = normalizeModel(value.fallbackModel);
 	if (fallbackModel) normalized.fallbackModel = fallbackModel;
+	const reflectorModel = normalizeModel(value.reflectorModel);
+	if (reflectorModel) normalized.reflectorModel = reflectorModel;
 	return normalized;
 }
 

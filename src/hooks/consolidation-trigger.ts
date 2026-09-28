@@ -136,8 +136,11 @@ function workerHeadersFor(ctx: ConsolidationCtx, resolved: ResolvedModel): Resol
 	};
 }
 
-/** Thinking level for the worker call: the fallback's own setting wins when the fallback is active. */
+/** Thinking level for the worker call: the fallback's or reflector model's own setting wins when that model is active. */
 function workerThinkingLevel(runtime: Runtime, resolved: ResolvedModel) {
+	if (resolved.reflectorModelUsed === true) {
+		return runtime.config.reflectorModel?.thinking ?? runtime.config.model?.thinking ?? "low";
+	}
 	if (resolved.fallbackUsed === true) {
 		return runtime.config.fallbackModel?.thinking ?? runtime.config.model?.thinking ?? "low";
 	}
@@ -176,8 +179,26 @@ function makeModelResolver(runtime: Runtime, ctx: ConsolidationCtx): ModelResolv
 	// Once the fallback proves usable, keep it for the rest of the pass so later
 	// stages do not re-pay a known-broken primary.
 	let fallbackActive: ResolvedModel | undefined;
+	let reflectorCached: ResolveResult | undefined;
 
 	const resolve = async (stage: ConsolidationPhase): Promise<ResolvedModel | undefined> => {
+		if (stage === "reflector" && runtime.config.reflectorModel && typeof runtime.resolveReflectorModel === "function") {
+			reflectorCached ??= await runtime.resolveReflectorModel({
+				model: ctx.model,
+				modelRegistry: ctx.modelRegistry,
+				hasUI: ctx.hasUI,
+				ui: ctx.ui,
+			});
+			if (reflectorCached.ok) {
+				runtime.reflectorModelFailureNotified = false;
+				return workerHeadersFor(ctx, reflectorCached);
+			}
+			debugLog("reflector.reflector_model_unavailable", { reason: reflectorCached.reason });
+			if (!runtime.reflectorModelFailureNotified && ctx.hasUI && ctx.ui) {
+				ctx.ui.notify(`Observational memory: ${reflectorCached.reason}; reflector uses the memory model`, "warning");
+				runtime.reflectorModelFailureNotified = true;
+			}
+		}
 		if (fallbackActive) {
 			runtime.resolveFailureNotified = false;
 			return fallbackActive;

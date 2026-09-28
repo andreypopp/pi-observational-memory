@@ -13,6 +13,8 @@ export type ResolveResult =
 			fallbackUsed?: boolean;
 			/** Primary failure reason recorded when `fallbackUsed` is true. */
 			primaryFailure?: string;
+			/** True when this result came from `config.reflectorModel`. */
+			reflectorModelUsed?: boolean;
 	  }
 	| { ok: false; reason: string };
 
@@ -116,6 +118,7 @@ export class Runtime {
 	compactInFlight = false;
 	compactHookInFlight = false;
 	resolveFailureNotified = false;
+	reflectorModelFailureNotified = false;
 	lastObserverError: string | undefined;
 	lastReflectorError: string | undefined;
 	lastDropperError: string | undefined;
@@ -206,6 +209,20 @@ export class Runtime {
 		const model = ctx.modelRegistry.find(target.provider, target.id);
 		if (!model) return { ok: false, reason: `fallback model ${target.provider}/${target.id} not found` };
 		return this.resolveCandidate(ctx, model);
+	}
+
+	/**
+	 * Resolve `config.reflectorModel` with the same auth rules as the primary path.
+	 * Returns `ok: false` when unset, absent from the registry, or carrying no usable
+	 * credentials; the reflector then uses the regular memory model.
+	 */
+	async resolveReflectorModel(ctx: ResolveCtx): Promise<ResolveResult> {
+		const target = this.config.reflectorModel;
+		if (!target) return { ok: false, reason: "no reflector model configured" };
+		const model = ctx.modelRegistry.find(target.provider, target.id);
+		if (!model) return { ok: false, reason: `reflector model ${target.provider}/${target.id} not found` };
+		const result = await this.resolveCandidate(ctx, model);
+		return result.ok ? { ...result, reflectorModelUsed: true } : result;
 	}
 
 	/** Apply Pi's request-auth acceptance rule to one already-selected model. */

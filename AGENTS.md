@@ -29,6 +29,10 @@ single place that applies Pi's auth acceptance rule — both the primary and fal
 it. Do not make the fallback mandatory: with none configured, the previous skip/fail-safe behavior
 must be byte-for-byte unchanged (covered by `tests/runtime.test.ts` and `tests/consolidation-trigger.test.ts`).
 
+`config.reflectorModel` is a reflector-only override resolved first by `makeModelResolver` for the reflector
+stage (`Runtime.resolveReflectorModel`, same `resolveCandidate` rule); when it fails to resolve, the reflector
+takes the normal primary→fallback path. Unset, nothing changes.
+
 ## Worker instructions on claude-bridge models
 
 Pi 0.87's agent loop reads the system prompt only from leading `role: "system"` transcript messages;

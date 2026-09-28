@@ -88,7 +88,9 @@ function setup(args: {
 		lastDropperError: undefined as string | undefined,
 		ensureConfig: vi.fn(),
 		resolveModel: vi.fn(async () => ({ ok: true, model: { reasoning: true }, apiKey: "key", headers: { h: "v" } })),
-		resolveFallbackModel: vi.fn(async () => ({ ok: false, reason: "no fallback model configured" })),
+		resolveFallbackModel: vi.fn(async () => ({ ok: false, reason: "no fallback model configured" })) as any,
+		resolveReflectorModel: vi.fn(async () => ({ ok: false, reason: "no reflector model configured" })) as any,
+		reflectorModelFailureNotified: false,
 		launchConsolidationTask: vi.fn((_ctx, work) => {
 			runtime.consolidationInFlight = true;
 			launchedWork = work;
@@ -753,6 +755,72 @@ describe("V3 consolidation trigger", () => {
 		expect(dropperFailure.runtime.lastDropperError).toBe("drop failed");
 		expect(dropperFailure.pi.appendEntry).toHaveBeenCalledTimes(1);
 		expect(dropperFailure.pi.appendEntry).toHaveBeenCalledWith(OM_REFLECTIONS_RECORDED, { reflections: [newRef], coversUpToId: "raw-1" });
+	});
+
+	describe("reflector model", () => {
+		const opus = { provider: "claude-bridge", id: "claude-opus-5-5" };
+		const reflectorEntries = () => [
+			textCustomMessage("raw-1", "aaaaaaaa"),
+			observationsRecordedEntry("om-obs", { observations: [obsA], coversUpToId: "raw-1" }),
+		];
+
+		it("is not resolved when unset, so the reflector uses the memory model", async () => {
+			const { fire, runLaunchedWork, runtime } = setup({ entries: reflectorEntries(), observeAfterTokens: 999 });
+
+			fire();
+			await runLaunchedWork();
+
+			expect(runtime.resolveReflectorModel).not.toHaveBeenCalled();
+			expect(mockAgents.runReflector).toHaveBeenCalledWith(expect.objectContaining({ apiKey: "key", thinkingLevel: "minimal" }));
+		});
+
+		it("runs the reflector on the reflector model with its own thinking level", async () => {
+			const newRef = reflection("ffffffffffff", ["aaaaaaaaaaaa"]);
+			mockAgents.runReflector.mockResolvedValueOnce([newRef]);
+			mockAgents.runDropper.mockResolvedValueOnce(undefined);
+			const { fire, runLaunchedWork, runtime } = setup({ entries: reflectorEntries(), observeAfterTokens: 999, observationsPoolMaxTokens: 10 });
+			(runtime.config as any).reflectorModel = { ...opus, thinking: "high" };
+			runtime.resolveReflectorModel.mockResolvedValueOnce({ ok: true, model: opus, apiKey: "opus-key", reflectorModelUsed: true });
+
+			fire();
+			await runLaunchedWork();
+
+			expect(mockAgents.runReflector).toHaveBeenCalledWith(expect.objectContaining({ model: opus, apiKey: "opus-key", thinkingLevel: "high" }));
+			expect(mockAgents.runDropper).toHaveBeenCalledWith(expect.objectContaining({ apiKey: "key", thinkingLevel: "minimal" }));
+			expect(runtime.resolveReflectorModel).toHaveBeenCalledTimes(1);
+		});
+
+		it("falls back to the memory model and warns once when the reflector model is unavailable", async () => {
+			const { fire, runLaunchedWork, runtime, ctx } = setup({ entries: reflectorEntries(), observeAfterTokens: 999 });
+			(runtime.config as any).reflectorModel = opus;
+			runtime.resolveReflectorModel.mockResolvedValue({ ok: false, reason: "reflector model claude-bridge/claude-opus-5-5 not found" });
+
+			fire();
+			await runLaunchedWork();
+			runtime.consolidationInFlight = false;
+			fire();
+			await runLaunchedWork();
+
+			expect(mockAgents.runReflector).toHaveBeenCalledWith(expect.objectContaining({ apiKey: "key", thinkingLevel: "minimal" }));
+			const warnings = ctx.ui.notify.mock.calls.filter(([message]: [string]) => message.includes("reflector uses the memory model"));
+			expect(warnings).toEqual([["Observational memory: reflector model claude-bridge/claude-opus-5-5 not found; reflector uses the memory model", "warning"]]);
+		});
+
+		it("retries a failed reflector-model call once with the fallback model", async () => {
+			const newRef = reflection("ffffffffffff", ["aaaaaaaaaaaa"]);
+			mockAgents.runReflector.mockRejectedValueOnce(new Error("opus down")).mockResolvedValueOnce([newRef]);
+			const { fire, runLaunchedWork, runtime, pi } = setup({ entries: reflectorEntries(), observeAfterTokens: 999 });
+			(runtime.config as any).reflectorModel = opus;
+			runtime.resolveReflectorModel.mockResolvedValueOnce({ ok: true, model: opus, apiKey: "opus-key", reflectorModelUsed: true });
+			const fallback = { provider: "opencode-go", id: "deepseek-v4.1-flash" };
+			runtime.resolveFallbackModel.mockResolvedValueOnce({ ok: true, model: fallback, apiKey: "go-key" });
+
+			fire();
+			await runLaunchedWork();
+
+			expect(mockAgents.runReflector).toHaveBeenNthCalledWith(2, expect.objectContaining({ model: fallback, apiKey: "go-key" }));
+			expect(pi.appendEntry).toHaveBeenCalledWith(OM_REFLECTIONS_RECORDED, { reflections: [newRef], coversUpToId: "raw-1" });
+		});
 	});
 
 	describe("fallback model retry", () => {
