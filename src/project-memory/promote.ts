@@ -37,12 +37,14 @@ export type PromotePlan = {
 	orphanMemoryIds: string[];
 	/** Rewritten lines, recorded as new reflections. */
 	recordedReflections: Reflection[];
-	/** One retirement per rewrite, for its sources in the branch ledger. */
-	replacements: { reflectionIds: string[]; replacedBy: string }[];
+	/** One retirement per rewrite, for its sources in the branch ledger; /om:ground adds its evidence. */
+	replacements: { reflectionIds: string[]; replacedBy: string; reason?: string }[];
 	/** Promoted reflection ids to retire with kind "promoted": pure promotions and rewrites. */
 	promotedIds: string[];
 	/** Active reflections the plan relies on; each must still be active when it is applied. */
 	activeSourceIds: string[];
+	/** /om:ground only: removed block lines' reflections, retired as stale with the evidence. */
+	staleRetirements?: { reflectionIds: string[]; reason: string }[];
 };
 
 export function readContextFile(path: string): string | undefined {
@@ -162,10 +164,10 @@ export function promoteSummary(plan: PromotePlan, cwd: string): string {
 }
 
 /** The full preview: block diff, `.memory/` files, ledger changes and budget. */
-export function renderPromotePreview(plan: PromotePlan, cwd: string, maxTokens: number): string {
+export function renderPromotePreview(plan: PromotePlan, cwd: string, maxTokens: number, title = "Observational memory: /om:promote preview"): string {
 	const { target } = plan;
 	const proposedIds = new Set(plan.proposedLines.map((line) => line.id));
-	const lines: string[] = ["Observational memory: /om:promote preview", ""];
+	const lines: string[] = [title, ""];
 	lines.push(`Target: ${displayPath(target.contextPath, cwd)}${target.contextExists ? "" : " (new file)"}`);
 	if (target.linkedWorktreeRoot) {
 		lines.push(`This is a linked git worktree (${target.linkedWorktreeRoot}); the block and .memory/ go to the main worktree at ${target.root}.`);
@@ -189,6 +191,7 @@ export function renderPromotePreview(plan: PromotePlan, cwd: string, maxTokens: 
 		plan.recordedReflections.length > 0 ? `record ${plural(plan.recordedReflections.length, "rewritten reflection")}` : undefined,
 		replacedCount > 0 ? `retire ${replacedCount} replaced` : undefined,
 		plan.promotedIds.length > 0 ? `mark ${plan.promotedIds.length} promoted (they leave active memory)` : undefined,
+		plan.staleRetirements?.length ? `retire ${plan.staleRetirements.length} removed as stale` : undefined,
 	].filter((part): part is string => part !== undefined);
 	lines.push(`Memory ledger: ${ledger.length > 0 ? ledger.join("; ") : "no changes"}`);
 	return lines.join("\n");
@@ -216,8 +219,9 @@ export type PromoteLedgerEntries = {
 export function promoteLedgerEntries(plan: PromotePlan, coversUpToId: string): PromoteLedgerEntries {
 	const recorded = buildReflectionsRecordedData(plan.recordedReflections, coversUpToId);
 	const dropped = [
-		...plan.replacements.map((replacement) => buildReflectionsDroppedData(replacement.reflectionIds, coversUpToId, replacement.replacedBy)),
+		...plan.replacements.map((replacement) => buildReflectionsDroppedData(replacement.reflectionIds, coversUpToId, replacement.replacedBy, undefined, replacement.reason)),
 		buildReflectionsDroppedData(plan.promotedIds, coversUpToId, undefined, "promoted"),
+		...(plan.staleRetirements ?? []).map((retirement) => buildReflectionsDroppedData(retirement.reflectionIds, coversUpToId, undefined, "stale", retirement.reason)),
 	].filter((data): data is ReflectionsDroppedEntryData => data !== undefined);
 	return { ...(recorded ? { recorded } : {}), dropped };
 }

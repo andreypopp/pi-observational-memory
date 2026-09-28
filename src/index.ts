@@ -1,4 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { registerGroundCommand } from "./commands/ground.js";
 import { registerPromoteCommand } from "./commands/promote.js";
 import { registerReflectCommand } from "./commands/reflect.js";
 import { registerStatusCommand } from "./commands/status.js";
@@ -22,5 +23,6 @@ export default function observationalMemory(pi: ExtensionAPI) {
 	registerViewCommand(pi, runtime);
 	registerReflectCommand(pi, runtime);
 	registerPromoteCommand(pi, runtime);
+	registerGroundCommand(pi, runtime);
 	registerRecallTool(pi);
 }

@@ -68,8 +68,8 @@ and recall (`src/session-ledger/fold.ts`), and crystallize's duplicate check exc
 
 ## /om:reflect
 
-`src/commands/reflect.ts` sets a one-shot `runtime.reflectRequest` and calls `ctx.compact()` without awaiting it (Pi's
-`compact()` waits for idle). The compaction hook consumes the request and runs a forced consolidation pass under the
+`src/commands/reflect.ts` refuses unless `ctx.isIdle()` (Pi's `compact()` aborts a running turn), sets a one-shot
+`runtime.reflectRequest` and calls `ctx.compact()` without awaiting it. The compaction hook consumes the request and runs a forced consolidation pass under the
 consolidation lock. Every entry the pass writes is capped at `firstKeptEntryId` via `ConsolidationOptions.coverageLimitId`,
 then the hook full-folds the live branch. OM can only learn the cut inside `session_before_compact`, so the pass
 must stay in the hook.
@@ -85,6 +85,15 @@ reviewer. Pi caches context files until /reload, so `runtime.contextFileOverride
 content on top of every project-context source; do not call `ctx.reload()`. Recall falls back to the nearest
 `.memory/` only for ids not on the branch; with no store and no block, recall/status/worker inputs must stay
 byte-for-byte unchanged. Tests use temp dirs only.
+
+## /om:ground
+
+`src/commands/ground.ts`: an /om:reflect request carrying `grounding` + `onProgress`; the pipeline passes them only to the
+review (`runReviewStep`), which then gets Pi's read/grep/find/ls/bash tools at the promote target root
+(`agents/reviewer/repo-tools.ts`, bash timeout-capped, prompt-only read-only), `GROUNDING_SYSTEM`, the block lines and
+`revise_promoted_block`. Block revisions are applied after the compaction via `/om:promote`'s plan/apply
+(`project-memory/ground.ts`). `reason` on `om.reflections.dropped` is written only by grounding; fold/projection ignore
+it, recall shows it. Without `grounding`, review inputs, schema and ledger entries must stay byte-for-byte unchanged.
 
 ## Maintaining this file
 

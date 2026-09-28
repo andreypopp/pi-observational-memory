@@ -69,6 +69,8 @@ export type ReflectionsDroppedEntryData = {
 	replacedBy?: string;
 	/** Why the ids were retired; only on plain retirements, absent on older entries. */
 	kind?: ReflectionRetirementKind;
+	/** Evidence for the retirement, from /om:ground; absent on every other entry. */
+	reason?: string;
 	coversUpToId: string;
 };
 
@@ -170,6 +172,7 @@ export function isReflectionsDroppedData(value: unknown): value is ReflectionsDr
 	if (!isPlainRecord(value)) return false;
 	if (!isMemoryIdArray(value.reflectionIds) || !isNonEmptyString(value.coversUpToId)) return false;
 	if (value.kind !== undefined && (value.replacedBy !== undefined || !isReflectionRetirementKind(value.kind))) return false;
+	if (value.reason !== undefined && typeof value.reason !== "string") return false;
 	if (value.replacedBy === undefined) return true;
 	return isMemoryId(value.replacedBy) && !value.reflectionIds.includes(value.replacedBy);
 }
@@ -248,11 +251,14 @@ export function buildReflectionsDroppedData(
 	coversUpToId: string,
 	replacedBy?: string,
 	kind?: ReflectionRetirementKind,
+	reason?: string,
 ): ReflectionsDroppedEntryData | undefined {
+	// Key order is part of the stored entry, so entries without a reason keep their exact shape.
+	const why = reason?.trim() ? { reason: reason.trim() } : {};
 	const data: ReflectionsDroppedEntryData = replacedBy !== undefined
-		? { reflectionIds, replacedBy, coversUpToId }
+		? { reflectionIds, replacedBy, ...why, coversUpToId }
 		: kind !== undefined
-			? { reflectionIds, kind, coversUpToId }
-			: { reflectionIds, coversUpToId };
+			? { reflectionIds, kind, ...why, coversUpToId }
+			: { reflectionIds, ...why, coversUpToId };
 	return isReflectionsDroppedData(data) ? data : undefined;
 }

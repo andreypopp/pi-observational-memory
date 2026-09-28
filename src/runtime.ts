@@ -434,3 +434,13 @@ export class Runtime {
 		})();
 	}
 }
+
+/** A compaction, its hook, or an /om:reflect or /om:ground request is pending or running. */
+export function compactionBusy(runtime: Runtime): boolean {
+	return runtime.compactInFlight || runtime.compactHookInFlight || runtime.reflectRequest !== undefined;
+}
+
+/** A compaction or an /om:promote is running: a command that compacts or writes the block must not start. */
+export function isBusy(runtime: Runtime): boolean {
+	return runtime.promoteInFlight || compactionBusy(runtime);
+}

@@ -1,3 +1,8 @@
+import type { BlockRevision, StaleTextReport } from "./agents/reviewer/grounding.js";
+import type { ParsedContextFile } from "./project-memory/block.js";
+import type { PromoteTarget } from "./project-memory/target.js";
+import type { ConsolidationPhase } from "./runtime.js";
+
 /** Counts a consolidation pass accumulates when a caller asks for a report (the /om:reflect pass). */
 export type ConsolidationReport = {
 	observationsRecorded: number;
@@ -29,9 +34,38 @@ export type ReflectReport = ConsolidationReport & {
 	after?: MemorySize;
 };
 
-/** One-shot /om:reflect request, consumed by the next compaction hook. */
+/** A stage of the forced pass, for progress labels; "fold" is the compaction hook's full fold. */
+export type PassStage = ConsolidationPhase | "fold";
+
+/** Sent with the "review" stage: how many active reflections it reviews. */
+export type PassProgressDetail = { reflections: number };
+
+/**
+ * /om:ground's part of a forced pass: its review checks memory against the repository with tools.
+ * The pass fills in the results; the command applies block revisions after the compaction.
+ */
+export type GroundingRequest = {
+	target: PromoteTarget;
+	/** The context file as parsed when the command started; its block lines are what the review checks. */
+	parsed: ParsedContextFile;
+	/** Called after each repo tool call, with `toolCalls` already counted. */
+	onToolCall?: () => void;
+	toolCalls: number;
+	/** Set when the grounding review ran. */
+	reviewed: boolean;
+	reflectionsRetiredStale: number;
+	reflectionsRewritten: number;
+	blockRevisions: BlockRevision[];
+	staleText: StaleTextReport[];
+};
+
+/** One-shot /om:reflect (or /om:ground) request, consumed by the next compaction hook. */
 export type ReflectRequest = {
 	report: ReflectReport;
+	/** Set by /om:ground. */
+	grounding?: GroundingRequest;
+	/** Called as each stage of the pass starts. */
+	onProgress?: (stage: PassStage, detail?: PassProgressDetail) => void;
 };
 
 export function emptyReflectReport(): ReflectReport {
@@ -76,6 +110,29 @@ export function renderReflectReport(report: ReflectReport): string {
 		lines.push("Pi had nothing to compact yet; the agent sees this memory after a later compaction.");
 	} else if (before) {
 		lines.push("Memory is empty; Pi's native summary was used.");
+	}
+	return lines.join("\n");
+}
+
+/** How /om:ground's block revisions ended: "no changes", "applied", "declined", "preview only" or "not applied: …". */
+export type GroundBlockOutcome = { rewritten: number; removed: number; status: string };
+
+export function renderGroundReport(report: ReflectReport, grounding: GroundingRequest, block: GroundBlockOutcome): string {
+	const lines = [renderReflectReport(report)];
+	if (!grounding.reviewed) {
+		lines.push("Grounding: the grounding review did not run; /om:status shows any memory worker error.");
+		return lines.join("\n");
+	}
+	lines.push(
+		`Grounding: ${grounding.toolCalls} tool call${grounding.toolCalls === 1 ? "" : "s"}; ${grounding.reflectionsRetiredStale} reflection${grounding.reflectionsRetiredStale === 1 ? "" : "s"} retired as stale, ${grounding.reflectionsRewritten} rewritten`,
+		block.rewritten + block.removed > 0
+			? `Block: ${block.rewritten} rewritten, ${block.removed} removed (${block.status})`
+			: `Block: ${block.status}`,
+	);
+	if (grounding.staleText.length === 0) lines.push("Stale hand-written text: none found");
+	else {
+		lines.push("Stale hand-written text (not edited):");
+		for (const item of grounding.staleText) lines.push(`- ${item.path}: "${item.excerpt}" — ${item.reason}`);
 	}
 	return lines.join("\n");
 }

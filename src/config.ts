@@ -87,6 +87,8 @@ export interface Config {
 	projectContextMaxTokens?: number;
 	/** Maximum estimated tokens of the managed block /om:promote writes into the project's AGENTS.md. */
 	promoteMaxTokens: number;
+	/** Turn cap for /om:ground's grounding review, which inspects the repo with tools; replaces agentMaxTurns for that call. */
+	groundMaxTurns: number;
 	showWorkerNotifications: boolean;
 	passive: boolean;
 	debugLog: boolean;
@@ -104,6 +106,7 @@ export const DEFAULTS: Config = {
 	agentMaxTokens: 32_000,
 	projectContext: true,
 	promoteMaxTokens: 1_500,
+	groundMaxTurns: 60,
 	showWorkerNotifications: true,
 	passive: false,
 	debugLog: false,
@@ -257,6 +260,7 @@ function normalizeSettingsConfig(value: Record<string, unknown>): Partial<Config
 		"agentMaxTokens",
 		"projectContextMaxTokens",
 		"promoteMaxTokens",
+		"groundMaxTurns",
 	] as const;
 	for (const key of numberKeys) {
 		const normalizedValue = positiveIntegerOrUndefined(value[key]);

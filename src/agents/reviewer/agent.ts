@@ -1,4 +1,5 @@
 import { agentLoop, type AgentContext, type AgentLoopConfig, type AgentTool } from "@earendil-works/pi-agent-core";
+import { basename } from "node:path";
 import type { Message, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { Type } from "@earendil-works/pi-ai";
 import type { Static } from "typebox";
@@ -18,7 +19,8 @@ import {
 	type Reflection,
 	type ReflectionRetirementKind,
 } from "../../session-ledger/index.js";
-import { REVIEW_SYSTEM } from "./prompts.js";
+import { countedTools, createReviseBlockTool, type GroundingReviewArgs, type GroundingReviewResult } from "./grounding.js";
+import { GROUNDING_SYSTEM, REVIEW_SYSTEM } from "./prompts.js";
 
 interface RunReflectionReviewArgs {
 	model: Model<any>;
@@ -44,6 +46,8 @@ interface RunReflectionReviewArgs {
 	thinkingLevel?: ModelThinkingLevel;
 	modelRegistry?: StreamableModelRegistry;
 	streamSimple?: WorkerStreamSimple;
+	/** /om:ground only: check memory against the repo with tools. Absent leaves the review unchanged. */
+	grounding?: GroundingReviewArgs;
 }
 
 export type ReflectionRetirement = {
@@ -51,6 +55,8 @@ export type ReflectionRetirement = {
 	replacedBy?: string;
 	/** Why plain retirements were made; absent on replacements. */
 	kind?: ReflectionRetirementKind;
+	/** The model's evidence, kept only by a grounding review. */
+	reason?: string;
 };
 
 export type ReflectionReviewResult = {
@@ -58,6 +64,8 @@ export type ReflectionReviewResult = {
 	replacements: Reflection[];
 	/** One group per replacement target, then one group of plain retirements per kind. */
 	retirements: ReflectionRetirement[];
+	/** Set by a grounding review. */
+	grounding?: GroundingReviewResult;
 };
 
 const TidyReflectionsSchema = Type.Object({
@@ -84,15 +92,26 @@ function unionSupportingIds(reflections: readonly Reflection[]): string[] {
 }
 
 export async function runReflectionReview(args: RunReflectionReviewArgs): Promise<ReflectionReviewResult | undefined> {
-	const { model, apiKey, headers, env, reflections, newReflectionIds, retiredReflectionIds, recordedAt, observations, signal } = args;
-	if (reflections.length === 0) return undefined;
+	const { model, apiKey, headers, env, reflections, newReflectionIds, retiredReflectionIds, recordedAt, observations, signal, grounding } = args;
+	if (reflections.length === 0 && !(grounding && grounding.blockLines.length > 0)) return undefined;
 
 	const activeById = new Map(reflections.map((reflection) => [reflection.id, reflection]));
+	// A grounding review may also retire a [new] reflection the repository contradicts, and keeps the model's reasons.
+	const newRetirableKinds: ReadonlySet<ReflectionRetirementKind> = new Set(grounding ? ["project-instructions", "stale"] : ["project-instructions"]);
+	const keptReason = (reason: string): string | undefined => (grounding ? reason.trim() || undefined : undefined);
 	// Every id is decided at most once per run; replacement targets count as decided so they stay active.
 	const decided = new Set<string>();
-	const plainRetirements: { id: string; kind?: ReflectionRetirementKind }[] = [];
+	const plainRetirements: { id: string; kind?: ReflectionRetirementKind; reason?: string }[] = [];
 	const replacements = new Map<string, Reflection>();
 	const retirementsByTarget = new Map<string, string[]>();
+	// The reasons kept for each replacement target, joined into its retirement entry.
+	const reasonsByTarget = new Map<string, string[]>();
+	const keepReason = (target: string, reason: string) => {
+		const kept = keptReason(reason);
+		if (!kept) return;
+		const reasons = reasonsByTarget.get(target) ?? [];
+		if (!reasons.includes(kept)) reasonsByTarget.set(target, [...reasons, kept]);
+	};
 	let toolCallCount = 0;
 	let rejectedCount = 0;
 
@@ -112,7 +131,7 @@ export async function runReflectionReview(args: RunReflectionReviewArgs): Promis
 
 			for (const item of params.retire ?? []) {
 				const kind = isReflectionRetirementKind(item.kind) ? item.kind : undefined;
-				const problem = idProblem(item.id) ?? (newReflectionIds.has(item.id) && kind !== "project-instructions"
+				const problem = idProblem(item.id) ?? (newReflectionIds.has(item.id) && !(kind && newRetirableKinds.has(kind))
 					? `${item.id} is [new] and can be retired outright only as covered by project instructions; merge it into a replacement instead`
 					: undefined);
 				if (problem) {
@@ -120,7 +139,8 @@ export async function runReflectionReview(args: RunReflectionReviewArgs): Promis
 					continue;
 				}
 				decided.add(item.id);
-				plainRetirements.push({ id: item.id, ...(kind ? { kind } : {}) });
+				const reason = keptReason(item.reason);
+				plainRetirements.push({ id: item.id, ...(kind ? { kind } : {}), ...(reason ? { reason } : {}) });
 			}
 
 			for (const item of params.replace ?? []) {
@@ -149,9 +169,11 @@ export async function runReflectionReview(args: RunReflectionReviewArgs): Promis
 					decided.add(id);
 					for (const replacedId of replacesIds) decided.add(replacedId);
 					retirementsByTarget.set(id, [...(retirementsByTarget.get(id) ?? []), ...replacesIds]);
+					keepReason(id, item.reason);
 					continue;
 				}
 				for (const replacedId of replacesIds) decided.add(replacedId);
+				keepReason(id, item.reason);
 				const previous = replacements.get(id);
 				const allReplaced = [...(previous?.replaces ?? []), ...replacesIds];
 				replacements.set(id, {
@@ -176,11 +198,34 @@ export async function runReflectionReview(args: RunReflectionReviewArgs): Promis
 	};
 
 	const reflectionLines = reflections.map((reflection) => reflectionToReviewLine(reflection, recordedAt.get(reflection.id), newReflectionIds.has(reflection.id)));
-	const userText = withProjectContext(args.projectContext, `CURRENT REFLECTIONS:\n${joinOrEmpty(reflectionLines)}\n\nRECENT OBSERVATIONS:\n${joinOrEmpty(observations.map(observationToSummaryLine))}\n\nReview the reflections. If none needs to change, do not call the tool.`);
-	const { system, prompts } = workerMessages(model, REVIEW_SYSTEM, userText);
+	const reflectionsText = `CURRENT REFLECTIONS:\n${joinOrEmpty(reflectionLines)}`;
+	const observationsText = `RECENT OBSERVATIONS:\n${joinOrEmpty(observations.map(observationToSummaryLine))}`;
+	let toolCalls = 0;
+	const reviseBlock = grounding
+		? createReviseBlockTool({
+			blockLines: grounding.blockLines,
+			blockRecords: grounding.blockRecords,
+			activeReflectionIds: new Set(activeById.keys()),
+			retiredReflectionIds,
+			maxBlockTokens: grounding.maxBlockTokens,
+		})
+		: undefined;
+	const userText = grounding
+		? withProjectContext(
+			args.projectContext,
+			`${reflectionsText}\n\n${basename(grounding.contextPath)} PROMOTED LINES (${grounding.contextPath}):\n${joinOrEmpty(grounding.blockLines.map((line) => `[${line.id}] ${line.content}`))}\n\n${observationsText}\n\nREPOSITORY: ${grounding.root}\n\nCheck the reflections and promoted lines against the repository, then record decisions. If nothing needs to change, do not call tidy_reflections or revise_promoted_block.`,
+		)
+		: withProjectContext(args.projectContext, `${reflectionsText}\n\n${observationsText}\n\nReview the reflections. If none needs to change, do not call the tool.`);
+	const { system, prompts } = workerMessages(model, grounding ? `${REVIEW_SYSTEM}\n\n${GROUNDING_SYSTEM}` : REVIEW_SYSTEM, userText);
 	const context: AgentContext = {
 		messages: system,
-		tools: [tidyReflections as AgentTool<any>],
+		tools: grounding
+			? [
+				tidyReflections as AgentTool<any>,
+				reviseBlock!.tool as AgentTool<any>,
+				...countedTools(grounding.tools, () => grounding.onToolCall?.(++toolCalls)),
+			]
+			: [tidyReflections as AgentTool<any>],
 	};
 	const reasoning = (model as { reasoning?: unknown }).reasoning;
 	const thinkingLevel = args.thinkingLevel ?? "low";
@@ -220,12 +265,19 @@ export async function runReflectionReview(args: RunReflectionReviewArgs): Promis
 	await stream.result();
 
 	// Plain retirements are grouped by kind in first-seen order; kindless ones keep the pre-kind entry shape.
+	// A grounding review keeps one entry per id instead, each with its own reason.
 	const plainByKind = new Map<ReflectionRetirementKind | undefined, string[]>();
 	for (const { id, kind } of plainRetirements) plainByKind.set(kind, [...(plainByKind.get(kind) ?? []), id]);
+	const withReason = (target: string) => {
+		const reasons = reasonsByTarget.get(target);
+		return reasons ? { reason: reasons.join("; ") } : {};
+	};
 	const retirements: ReflectionRetirement[] = [
-		...Array.from(replacements.values()).map((replacement) => ({ reflectionIds: replacement.replaces!, replacedBy: replacement.id })),
-		...Array.from(retirementsByTarget, ([replacedBy, reflectionIds]) => ({ reflectionIds, replacedBy })),
-		...Array.from(plainByKind, ([kind, reflectionIds]) => (kind ? { reflectionIds, kind } : { reflectionIds })),
+		...Array.from(replacements.values()).map((replacement) => ({ reflectionIds: replacement.replaces!, replacedBy: replacement.id, ...withReason(replacement.id) })),
+		...Array.from(retirementsByTarget, ([replacedBy, reflectionIds]) => ({ reflectionIds, replacedBy, ...withReason(replacedBy) })),
+		...(grounding
+			? plainRetirements.map(({ id, kind, reason }) => ({ reflectionIds: [id], ...(kind ? { kind } : {}), ...(reason ? { reason } : {}) }))
+			: Array.from(plainByKind, ([kind, reflectionIds]) => (kind ? { reflectionIds, kind } : { reflectionIds }))),
 	];
 	debugLog("reflector.review_result", {
 		toolCallCount,
@@ -235,6 +287,9 @@ export async function runReflectionReview(args: RunReflectionReviewArgs): Promis
 		plainRetiredCount: plainRetirements.length,
 		projectInstructionsRetiredCount: plainByKind.get("project-instructions")?.length ?? 0,
 		rejectedCount,
+		...(grounding ? { groundingToolCalls: toolCalls } : {}),
 	});
+	// A grounding review always reports back, even with no retirements: its block decisions and tool calls count too.
+	if (grounding) return { replacements: Array.from(replacements.values()), retirements, grounding: { toolCalls, ...reviseBlock!.result() } };
 	return retirements.length > 0 ? { replacements: Array.from(replacements.values()), retirements } : undefined;
 }

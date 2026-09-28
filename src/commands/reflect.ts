@@ -1,13 +1,12 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { runReflectPass } from "../hooks/compaction-hook.js";
 import { refreshProjectContextFromCommand } from "../hooks/project-context.js";
-import type { Runtime } from "../runtime.js";
+import { compactionBusy, type Runtime } from "../runtime.js";
 import { emptyReflectReport, renderReflectReport, type ReflectRequest } from "../reflect-report.js";
-
-type NotifyLevel = "info" | "warning" | "error";
+import { commandNotify } from "./notify.js";
 
 /** Pi's rejections when the branch has no removable range; they come before any compaction hook runs. */
-function isNothingToCompact(error: Error): boolean {
+export function isNothingToCompact(error: Error): boolean {
 	return error.message.startsWith("Nothing to compact") || error.message === "Already compacted";
 }
 
@@ -16,14 +15,14 @@ export function registerReflectCommand(pi: ExtensionAPI, runtime: Runtime): void
 		description: "Run all memory workers now, then compact with a full memory fold when there is something to compact",
 		handler: async (_args, ctx: ExtensionCommandContext) => {
 			runtime.ensureConfig(ctx.cwd);
-			const hasUI = ctx.hasUI;
-			const ui = ctx.ui;
-			const notify = (message: string, level: NotifyLevel = "info") => {
-				if (hasUI && ui) ui.notify(message, level);
-				else console.log(message);
-			};
+			const notify = commandNotify(ctx);
 
-			if (runtime.compactInFlight || runtime.compactHookInFlight || runtime.reflectRequest) {
+			// Pi's compact() aborts a running turn first.
+			if (!ctx.isIdle()) {
+				notify("Observational memory: wait until the agent finishes its turn, then run /om:reflect again", "warning");
+				return;
+			}
+			if (compactionBusy(runtime)) {
 				notify("Observational memory: a compaction is already running; try /om:reflect again when it finishes", "warning");
 				return;
 			}
@@ -45,7 +44,7 @@ export function registerReflectCommand(pi: ExtensionAPI, runtime: Runtime): void
 			};
 			notify("Observational memory: reflecting — running memory workers, then compacting", "info");
 
-			// Not awaited: Pi's compact() waits for the session to go idle first.
+			// Not awaited: compact() reports through these callbacks.
 			ctx.compact({
 				onComplete: () => {
 					finish();

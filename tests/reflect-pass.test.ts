@@ -164,7 +164,8 @@ describe("/om:reflect forced pass in the compaction hook", () => {
 
 		expect(mockAgents.runObserver).toHaveBeenCalledWith(expect.objectContaining({ allowedSourceEntryIds: ["raw-1", "raw-2"], signal }));
 		expect(mockAgents.runReflector).toHaveBeenCalledWith(expect.objectContaining({ signal }));
-		expect(mockAgents.runReflectionReview).toHaveBeenCalledWith(expect.objectContaining({ signal }));
+		expect(mockAgents.runReflectionReview).toHaveBeenCalledWith(expect.objectContaining({ signal, maxTurns: 9 }));
+		expect(Object.keys(mockAgents.runReflectionReview.mock.calls[0][0])).not.toContain("grounding");
 		expect(mockAgents.runDropper).toHaveBeenCalledWith(expect.objectContaining({ signal }));
 		expect(pi.appendEntry.mock.calls).toEqual([
 			[OM_OBSERVATIONS_RECORDED, { observations: [obsA], coversUpToId: "raw-2" }],

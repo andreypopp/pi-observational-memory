@@ -2,6 +2,8 @@ import * as piCodingAgent from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { isProjectContextFile, type ProjectContextFile } from "../agents/project-context.js";
 import { debugLog } from "../debug-log.js";
+import type { ParsedContextFile } from "../project-memory/block.js";
+import type { PromoteTarget } from "../project-memory/target.js";
 import type { Runtime } from "../runtime.js";
 
 /** Where the reflector's context files came from: "none" when the feature is off or nothing could be read. */
@@ -85,4 +87,21 @@ function loadProjectContextFiles(runtime: Runtime, cwd: string): ResolvedProject
 		debugLog("project_context.loader_error", { errorMessage: error instanceof Error ? error.message : String(error) });
 		return { files: [], source: "none" };
 	}
+}
+
+export function stripBom(content: string): string {
+	return content.replace(/^\uFEFF/, "");
+}
+
+/**
+ * The session's resolved context files with the managed block cut out of the promote target, so the block's
+ * lines are shown to /om:promote and /om:ground once, in their own section.
+ */
+export function contextFilesWithoutBlock(files: ProjectContextFile[], target: PromoteTarget, parsed: ParsedContextFile): ProjectContextFile[] {
+	const outside = stripBom(parsed.outside);
+	if (files.some((file) => file.path === target.contextPath)) {
+		return files.map((file) => (file.path === target.contextPath ? { path: file.path, content: outside } : file));
+	}
+	// A linked worktree loads its own copy of the file; only add the target when Pi would load it.
+	return !target.linkedWorktreeRoot && outside.trim() ? [...files, { path: target.contextPath, content: outside }] : files;
 }

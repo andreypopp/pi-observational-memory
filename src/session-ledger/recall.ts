@@ -1,4 +1,10 @@
-import { applyReflectionRetirement, emptyReflectionRetirementState, reactivateRecordedReflections, type ReflectionRetirementState } from "./fold.js";
+import {
+	applyReflectionRetirement,
+	emptyReflectionRetirementState,
+	isReversiblyRetired,
+	reactivateRecordedReflections,
+	type ReflectionRetirementState,
+} from "./fold.js";
 import {
 	isObservationsDroppedEntry,
 	isObservationsRecordedEntry,
@@ -47,6 +53,8 @@ export type RecalledReflection = {
 	replacedBy?: string;
 	/** Retirement kind, when the retirement named one. */
 	retirementKind?: ReflectionRetirementKind;
+	/** Evidence the retirement recorded (/om:ground), when it has one. */
+	retirementReason?: string;
 	/** First-recorded reflections named by `reflection.replaces`. */
 	replacedReflections: Reflection[];
 	missingReplacedReflectionIds: string[];
@@ -107,11 +115,14 @@ function indexLedger(entries: Entry[]): {
 	reflections: IndexedReflection[];
 	droppedIds: Set<string>;
 	retirement: ReflectionRetirementState;
+	retirementReasons: Map<string, string>;
 } {
 	const observations: IndexedObservation[] = [];
 	const reflections: IndexedReflection[] = [];
 	const droppedIds = new Set<string>();
 	const retirement = emptyReflectionRetirementState();
+	// The reason follows the retirement kind: kept while that retirement stands, cleared when it is superseded.
+	const retirementReasons = new Map<string, string>();
 
 	for (let entryIndex = 0; entryIndex < entries.length; entryIndex++) {
 		const entry = entries[entryIndex];
@@ -126,6 +137,9 @@ function indexLedger(entries: Entry[]): {
 				reflections.push({ reflection, entryId: entry.id, entryIndex, recordIndex });
 			});
 			reactivateRecordedReflections(entry.data.reflections, retirement);
+			for (const reflection of entry.data.reflections) {
+				if (!retirement.retiredReflectionIds.has(reflection.id)) retirementReasons.delete(reflection.id);
+			}
 			continue;
 		}
 		if (isObservationsDroppedEntry(entry)) {
@@ -133,11 +147,17 @@ function indexLedger(entries: Entry[]): {
 			continue;
 		}
 		if (isReflectionsDroppedEntry(entry)) {
+			const { reason } = entry.data;
+			for (const id of entry.data.reflectionIds) {
+				if (retirement.retiredReflectionIds.has(id) && !isReversiblyRetired(id, retirement)) continue;
+				if (reason) retirementReasons.set(id, reason);
+				else retirementReasons.delete(id);
+			}
 			applyReflectionRetirement(entry.data, retirement);
 		}
 	}
 
-	return { observations, reflections, droppedIds, retirement };
+	return { observations, reflections, droppedIds, retirement, retirementReasons };
 }
 
 /** Resolve an observation's source entries; `location` is its ledger position, absent for `.memory/` records. */
@@ -194,6 +214,7 @@ export function recallMemorySources(entries: Entry[], memoryId: string): RecallR
 		reflections: indexedReflections,
 		droppedIds,
 		retirement: { retiredReflectionIds, reflectionReplacedBy, reflectionRetirementKind },
+		retirementReasons,
 	} = indexLedger(entries);
 	const directObservationMatches = indexedObservations.filter(({ observation }) => observation.id === memoryId);
 	const reflectionMatches = indexedReflections.filter(({ reflection }) => reflection.id === memoryId);
@@ -239,6 +260,7 @@ export function recallMemorySources(entries: Entry[], memoryId: string): RecallR
 		const replacedBy = reflectionReplacedBy.get(reflection.id);
 		const retired = retiredReflectionIds.has(reflection.id);
 		const retirementKind = retired ? reflectionRetirementKind.get(reflection.id) : undefined;
+		const retirementReason = retired ? retirementReasons.get(reflection.id) : undefined;
 		return {
 			reflection,
 			reflectionEntryId: entryId,
@@ -246,6 +268,7 @@ export function recallMemorySources(entries: Entry[], memoryId: string): RecallR
 			status: retired ? "retired" : "active",
 			...(replacedBy ? { replacedBy } : {}),
 			...(retirementKind ? { retirementKind } : {}),
+			...(retirementReason ? { retirementReason } : {}),
 			replacedReflections: replacedIds.flatMap((id) => {
 				const replaced = reflectionsById.get(id);
 				return replaced ? [replaced] : [];

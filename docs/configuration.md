@@ -82,6 +82,7 @@ You can omit everything. Defaults work for ordinary sessions, and if `model` is 
 | `projectContext` | boolean | `true` | Shows the session's context files (AGENTS.md, CLAUDE.md, …) to both reflector calls. `false` leaves worker inputs unchanged. |
 | `projectContextMaxTokens` | positive integer | derived | Maximum estimated tokens of project context per reflector call. Unset: `max(20000, floor(contextWindow * 0.1))` of the reflector model, or `20000` when unknown. |
 | `promoteMaxTokens` | positive integer | `1500` | Maximum estimated tokens of the managed block `/om:promote` writes into the project's AGENTS.md. |
+| `groundMaxTurns` | positive integer | `60` | Turn cap for `/om:ground`'s grounding review; replaces `agentMaxTurns` for that call only. |
 | `showWorkerNotifications` | boolean | `true` | Shows routine observer, reflector, and dropper progress notifications. |
 | `passive` | boolean | `false` | Disables proactive background memory and auto-compaction triggers. |
 | `debugLog` | boolean | `false` | Writes best-effort per-session extension debug events to Pi's agent directory. |
@@ -258,6 +259,12 @@ Files are kept whole. The budget fills from the most specific file (nearest the 
 Default: `1500`.
 
 The whole managed block `/om:promote` writes (markers, heading and lines) must stay within this many estimated tokens (characters / 4). The block is loaded into every session and subagent of the project, so keep it small; the promote call merges, rewrites and drops lines to fit. `/om:status` shows the block's size as `Promoted: N lines (~T tokens) in <path>`.
+
+## `groundMaxTurns`
+
+Default: `60`.
+
+`/om:ground`'s review checks reflections and promoted lines against the repository with tools, one or more tool calls per turn, so it needs far more turns than the other memory calls. This cap replaces `agentMaxTurns` for that call only. Expect 5-15 minutes on a large session (around 50 reflections and 20 promoted lines); lower the cap to bound it, at the cost of claims left unchecked.
 
 ## `showWorkerNotifications`
 

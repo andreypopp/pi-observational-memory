@@ -47,6 +47,7 @@ describe("V3 config", () => {
 			agentMaxTokens: 32000,
 			projectContext: true,
 			promoteMaxTokens: 1500,
+			groundMaxTurns: 60,
 			showWorkerNotifications: true,
 			passive: false,
 			debugLog: false,
@@ -163,6 +164,7 @@ describe("V3 config", () => {
 				projectContext: "false",
 				projectContextMaxTokens: 0,
 				promoteMaxTokens: -5,
+				groundMaxTurns: 0,
 			},
 		});
 
@@ -182,6 +184,13 @@ describe("V3 config", () => {
 		writeJson(join(cwd, ".pi", "settings.json"), { "observational-memory": { promoteMaxTokens: 800 } });
 
 		expect(loadConfig(cwd, {}).promoteMaxTokens).toBe(800);
+	});
+
+	it("defaults groundMaxTurns to 60 and accepts a positive integer", () => {
+		expect(DEFAULTS.groundMaxTurns).toBe(60);
+		writeJson(join(cwd, ".pi", "settings.json"), { "observational-memory": { groundMaxTurns: 25 } });
+
+		expect(loadConfig(cwd, {}).groundMaxTurns).toBe(25);
 	});
 
 	describe("resolveProjectContextMaxTokens", () => {

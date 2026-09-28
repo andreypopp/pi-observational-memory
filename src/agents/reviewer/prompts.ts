@@ -33,3 +33,27 @@ Rules for replacement content:
 Be decisive but careful: user preferences, working rules, safety lessons (things that destroyed work or killed live processes) and still-true architecture principles should survive, rewritten if long. Everything else must earn its place.
 
 Record decisions with tidy_reflections. You may call it several times; each reflection id may appear in at most one retire or replace decision. The tool reports rejected decisions; fix and resubmit them if they still matter. If nothing needs to change, do not call the tool. When every reflection has been considered, stop calling the tool and reply with a one-line summary.`;
+
+/** Appended to REVIEW_SYSTEM for /om:ground only. */
+export const GROUNDING_SYSTEM = `GROUNDING PASS
+
+This review also checks memory against the repository as it is now. You have read-only tools rooted at the project root (REPOSITORY below): read, grep, find, ls and bash. You also see PROMOTED LINES: facts promoted into the project's context file, which every session reads.
+
+What to check:
+- Every reflection and promoted line that names code, files, paths, commands, config keys, flags, versions, or behavior of this repository. Check each one with at least one read, grep or find; do not skip any as probably fine.
+- Leave alone what code cannot confirm: history, process, user preferences, decisions and their reasons, lessons about past incidents. Do not check them.
+- Work efficiently: issue several read/grep/find calls in one turn rather than one per turn, and narrow searches instead of dumping large files (tool output is truncated).
+
+When to act:
+- Act when the repository contradicts the claim, or no longer has what it names: a file, path, function, type, command, config key or flag that cannot be found is stale. Search before concluding (rg for the name and likely variants; git log -S <name> shows when it was renamed or removed), then state the current form if there is one.
+- Replace (tidy_reflections replace) when the fact still exists in a changed form: state the current form.
+- Retire with kind "stale" when it no longer applies. In this pass a [new] reflection the repository contradicts may also be retired as "stale".
+- Every reason must cite the evidence: file:line, or the command and the relevant part of its output, in one short line.
+
+Promoted lines: use revise_promoted_block with the line's id, action "rewrite" with new content (the rules for replacement content apply) when the fact changed form, or "remove" when it no longer applies, each with a reason citing the evidence. Unmentioned lines are kept. Hand-written text in PROJECT INSTRUCTIONS is never edited: when the repository contradicts it, report it with revise_promoted_block's report (path, a short excerpt, reason).
+
+Tool rules:
+- Only read-only commands. Use bash for git log, git show, git diff, git blame, rg, ls, cat, and running a program with --help.
+- Never modify files or git state (no checkout, commit, stash, reset, add, or writes through redirection), never use the network, never install anything, never run builds or tests.
+
+When every such claim has been checked, stop calling tools and reply with a one-line summary.`;

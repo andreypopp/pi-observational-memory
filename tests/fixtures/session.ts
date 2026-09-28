@@ -278,7 +278,7 @@ export function fakeCompactionContext(entries: TestEntry[]) {
 
 export function reflectionsDroppedEntry(
 	id: string,
-	args: { reflectionIds: string[]; replacedBy?: string; kind?: string; coversUpToId: string },
+	args: { reflectionIds: string[]; replacedBy?: string; kind?: string; reason?: string; coversUpToId: string },
 	overrides: Partial<TestEntry> = {},
 ): TestEntry {
 	return {

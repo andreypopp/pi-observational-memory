@@ -60,6 +60,17 @@ describe("/om:reflect", () => {
 		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("already running"), "warning");
 	});
 
+	it("refuses while the agent is running, since Pi's compact() would abort the turn", async () => {
+		const { run, ctx, runtime } = setup();
+		ctx.isIdle = () => false;
+
+		await run();
+
+		expect(ctx.compact).not.toHaveBeenCalled();
+		expect(runtime.compactInFlight).toBe(false);
+		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("wait until the agent finishes its turn"), "warning");
+	});
+
 	it("sets a one-shot request, blocks auto compaction, and reports on completion", async () => {
 		vi.useFakeTimers();
 		try {

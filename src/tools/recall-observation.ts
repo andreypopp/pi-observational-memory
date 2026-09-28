@@ -31,6 +31,7 @@ type ReflectionDetails = Pick<Reflection, "id" | "content" | "supportingObservat
 	reflectionIndex?: number;
 	status?: "retired";
 	retirementKind?: ReflectionRetirementKind;
+	retirementReason?: string;
 	replacedBy?: string;
 	replaces?: Pick<Reflection, "id" | "content">[];
 	missingReplacedReflectionIds?: string[];
@@ -169,6 +170,7 @@ function reflectionDetails(match: RecalledReflection): ReflectionDetails {
 		...(match.reflectionRecordIndex !== undefined ? { reflectionIndex: match.reflectionRecordIndex } : {}),
 		...(match.status === "retired" ? { status: "retired" as const } : {}),
 		...(match.retirementKind ? { retirementKind: match.retirementKind } : {}),
+		...(match.retirementReason ? { retirementReason: match.retirementReason } : {}),
 		...(match.replacedBy ? { replacedBy: match.replacedBy } : {}),
 		...(match.replacedReflections.length > 0 ? { replaces: match.replacedReflections.map(({ id, content }) => ({ id, content })) } : {}),
 		...(match.missingReplacedReflectionIds.length > 0 ? { missingReplacedReflectionIds: match.missingReplacedReflectionIds } : {}),
@@ -250,7 +252,8 @@ function reflectionLineText(reflection: ReflectionDetails): string {
 
 function retiredReflectionMessage(reflection: ReflectionDetails): string {
 	const replacement = reflection.replacedBy ? `; replaced by [${reflection.replacedBy}]` : "";
-	return `Reflection ${reflection.id} is ${retiredLabel(reflection)} from active memory but remains recallable${replacement}.`;
+	const reason = reflection.retirementReason ? ` Reason: ${reflection.retirementReason}` : "";
+	return `Reflection ${reflection.id} is ${retiredLabel(reflection)} from active memory but remains recallable${replacement}.${reason}`;
 }
 
 function replacedReflectionLines(reflections: ReflectionDetails[]): string[] {
@@ -464,7 +467,8 @@ function noteRows(details: RecallObservationToolDetails, sources: RecallSourceEn
 	for (const reflection of details.reflections) {
 		if (reflection.status !== "retired") continue;
 		const replacement = reflection.replacedBy ? `; replaced by ${reflection.replacedBy}` : "";
-		notes.push(noteLine("retired", `reflection ${reflection.id} is ${retiredLabel(reflection)} from active memory but remains recallable${replacement}`));
+		const reason = reflection.retirementReason ? `; reason: ${reflection.retirementReason}` : "";
+		notes.push(noteLine("retired", `reflection ${reflection.id} is ${retiredLabel(reflection)} from active memory but remains recallable${replacement}${reason}`));
 	}
 	if (details.observations.some((match) => match.observation.status === "dropped")) notes.push(noteLine("dropped", "one or more observations are dropped from active memory but remain recallable"));
 	if (details.unavailableSupportingObservations.length > 0) notes.push(noteLine("missing support", details.unavailableSupportingObservations.map((item) => item.observationId).join(", ")));

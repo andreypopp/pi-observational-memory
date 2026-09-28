@@ -50,6 +50,8 @@ export async function runReflectPass(
 			coverageLimitId: cut?.firstKeptEntryId,
 			signal: cut?.signal,
 			report: request.report,
+			...(request.grounding ? { grounding: request.grounding } : {}),
+			...(request.onProgress ? { onProgress: request.onProgress } : {}),
 		}));
 		debugLog("reflect.pass_done", { ...request.report, elapsedMs: Date.now() - startedAt });
 	});
@@ -75,7 +77,10 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 			// Consume the one-shot /om:reflect request before any await so no later compaction repeats it.
 			const reflectRequest = runtime.reflectRequest;
 			runtime.reflectRequest = undefined;
-			if (reflectRequest) await runReflectPass(pi, runtime, ctx, reflectRequest, { firstKeptEntryId, signal: event.signal });
+			if (reflectRequest) {
+				await runReflectPass(pi, runtime, ctx, reflectRequest, { firstKeptEntryId, signal: event.signal });
+				reflectRequest.onProgress?.("fold");
+			}
 			// The forced pass appended ledger entries, so fold the live branch rather than the event snapshot.
 			const entries = (reflectRequest ? ctx.sessionManager.getBranch() : branchEntries) as Entry[];
 			const projection = buildCompactionProjection(

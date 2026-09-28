@@ -5,10 +5,13 @@ import { ObserverStreamError, runObserver } from "../agents/observer/agent.js";
 import { renderProjectContext } from "../agents/project-context.js";
 import { runReflector } from "../agents/reflector/agent.js";
 import { runReflectionReview } from "../agents/reviewer/agent.js";
+import type { GroundingReviewArgs } from "../agents/reviewer/grounding.js";
+import { createRepoTools } from "../agents/reviewer/repo-tools.js";
 import { debugLog, withDebugLogContext } from "../debug-log.js";
-import type { ConsolidationReport } from "../reflect-report.js";
+import type { ConsolidationReport, GroundingRequest, PassProgressDetail, PassStage } from "../reflect-report.js";
+import { blockLineRecords } from "../project-memory/promote.js";
 import { resolveObserverChunkMaxTokens, resolveProjectContextMaxTokens } from "../config.js";
-import { resolveProjectContextFiles, type ResolvedProjectContextFiles } from "./project-context.js";
+import { contextFilesWithoutBlock, resolveProjectContextFiles, type ResolvedProjectContextFiles } from "./project-context.js";
 import type { ConsolidationPhase, ResolveCtx, ResolveResult, Runtime } from "../runtime.js";
 import { fmtLocal, serializeSourceAddressedBranchEntries } from "../serialize.js";
 import {
@@ -32,6 +35,7 @@ import {
 	rawTokensSinceReflectionCoverage,
 	reflectionToSummaryLine,
 	type Entry,
+	type FoldedLedger,
 	type Observation,
 	type Reflection,
 	type V3MemoryCustomType,
@@ -69,6 +73,10 @@ export type ConsolidationOptions = {
 	signal?: AbortSignal;
 	/** Accumulates what the pass recorded. */
 	report?: ConsolidationReport;
+	/** /om:ground: the review checks memory against the repository with tools and collects its results here. */
+	grounding?: GroundingRequest;
+	/** Called as each stage starts, for /om:ground's progress. */
+	onProgress?: (stage: PassStage, detail?: PassProgressDetail) => void;
 };
 
 function capCoverage(entries: Entry[], coversUpToId: string | undefined, options: ConsolidationOptions): string | undefined {
@@ -225,6 +233,32 @@ function projectContextFor(
 		omitted: rendered.omitted.map((file) => file.path),
 	});
 	return rendered.text;
+}
+
+/** The review's context files for /om:ground: the promoted block is cut out, since it has its own section. */
+function groundingProjectFiles(
+	runtime: Runtime,
+	grounding: GroundingRequest,
+	projectFiles: ResolvedProjectContextFiles,
+): ResolvedProjectContextFiles {
+	if (runtime.config.projectContext === false) return projectFiles;
+	return { files: contextFilesWithoutBlock(projectFiles.files, grounding.target, grounding.parsed), source: projectFiles.source };
+}
+
+/** The review's /om:ground arguments: repo tools at the promote target root and the block to check. */
+function groundingReviewArgs(runtime: Runtime, grounding: GroundingRequest, folded: FoldedLedger): GroundingReviewArgs {
+	return {
+		tools: createRepoTools(grounding.target.root),
+		root: grounding.target.root,
+		contextPath: grounding.target.contextPath,
+		blockLines: grounding.parsed.lines,
+		blockRecords: blockLineRecords(grounding.parsed.lines, folded, grounding.target.memoryDir),
+		maxBlockTokens: runtime.config.promoteMaxTokens,
+		onToolCall: () => {
+			grounding.toolCalls++;
+			grounding.onToolCall?.();
+		},
+	};
 }
 
 export type ModelResolver = {
@@ -404,6 +438,7 @@ export async function runConsolidationPipeline(
 	const resolver = makeModelResolver(runtime, ctx);
 
 	runtime.consolidationPhase = "observer";
+	options.onProgress?.("observer");
 	try {
 		const observerOutcome = await runObserverStage(pi, runtime, ctx, resolver, options);
 		if (observerOutcome === "abort") return;
@@ -413,6 +448,7 @@ export async function runConsolidationPipeline(
 	}
 
 	runtime.consolidationPhase = "reflector";
+	options.onProgress?.("reflector");
 	let reflectorResult: ReflectorStageResult;
 	try {
 		reflectorResult = await runReflectorStage(pi, runtime, ctx, resolver, options);
@@ -423,6 +459,7 @@ export async function runConsolidationPipeline(
 	}
 
 	runtime.consolidationPhase = "dropper";
+	options.onProgress?.("dropper");
 	try {
 		await runDropperStage(pi, runtime, ctx, resolver, reflectorResult.sameRunReflections, reflectorResult.effectiveReflectionCoverageId, options);
 	} catch (error) {
@@ -658,7 +695,9 @@ async function runReviewStep(
 ): Promise<Reflection[] | undefined> {
 	const entries = ctx.sessionManager.getBranch() as Entry[];
 	const folded = foldLedger(entries);
-	if (folded.activeReflections.length === 0) return undefined;
+	const { grounding } = options;
+	// A grounding pass also checks the promoted block, so it runs with no active reflections too.
+	if (folded.activeReflections.length === 0 && !(grounding && grounding.parsed.lines.length > 0)) return undefined;
 	const resolved = await resolver.resolve("reflector");
 	if (!resolved) return undefined;
 
@@ -681,6 +720,7 @@ async function runReviewStep(
 
 	let result: Awaited<ReturnType<typeof runReflectionReview>>;
 	runtime.consolidationPhase = "review";
+	options.onProgress?.("review", { reflections: reflectionCount });
 	try {
 		result = await runStageWithFallback(ctx, "reflector", resolved, resolver, (worker) => runReflectionReview({
 			model: worker.model as any,
@@ -692,12 +732,13 @@ async function runReviewStep(
 			retiredReflectionIds: folded.retiredReflectionIds,
 			recordedAt,
 			observations: folded.activeObservations,
-			projectContext: projectContextFor(runtime, projectFiles, worker, "review"),
+			projectContext: projectContextFor(runtime, grounding ? groundingProjectFiles(runtime, grounding, projectFiles) : projectFiles, worker, "review"),
 			signal: options.signal,
-			maxTurns: runtime.config.agentMaxTurns,
+			maxTurns: grounding ? runtime.config.groundMaxTurns : runtime.config.agentMaxTurns,
 			maxOutputTokens: runtime.config.agentMaxTokens,
 			thinkingLevel: workerThinkingLevel(runtime, worker),
 			modelRegistry: ctx.modelRegistry,
+			...(grounding ? { grounding: groundingReviewArgs(runtime, grounding, folded) } : {}),
 		}));
 	} catch (error) {
 		debugLog("reflector.review_error", {
@@ -708,6 +749,19 @@ async function runReviewStep(
 	} finally {
 		runtime.consolidationPhase = "reflector";
 	}
+	// A cancelled grounding pass writes nothing further.
+	if (grounding && options.signal?.aborted) return undefined;
+	if (grounding && result) {
+		if (result.grounding) {
+			grounding.reviewed = true;
+			grounding.blockRevisions = result.grounding.blockRevisions;
+			grounding.staleText = result.grounding.staleText;
+		}
+		grounding.reflectionsRewritten += result.replacements.length;
+		for (const retirement of result.retirements) {
+			if (retirement.kind === "stale" && retirement.replacedBy === undefined) grounding.reflectionsRetiredStale += retirement.reflectionIds.length;
+		}
+	}
 
 	let wrote = false;
 	const replacementData = result ? buildReflectionsRecordedData(result.replacements, coversUpToId) : undefined;
@@ -717,7 +771,7 @@ async function runReviewStep(
 		wrote = true;
 	}
 	for (const retirement of result?.retirements ?? []) {
-		const data = buildReflectionsDroppedData(retirement.reflectionIds, coversUpToId, retirement.replacedBy, retirement.kind);
+		const data = buildReflectionsDroppedData(retirement.reflectionIds, coversUpToId, retirement.replacedBy, retirement.kind, retirement.reason);
 		if (!data) continue;
 		appendEntry(pi, OM_REFLECTIONS_DROPPED, data);
 		if (options.report) {
