@@ -191,4 +191,24 @@ describe("V3 recall tool", () => {
 		expect(text).not.toContain("retired");
 		expect(text).not.toContain("Replaces");
 	});
+
+	it("labels reflections retired as covered by project instructions", async () => {
+		const obs = observation("aaaaaaaaaaaa", { content: "User likes tea.", sourceEntryIds: ["raw-1"] });
+		const ref = reflection("eeeeeeeeeeee", ["aaaaaaaaaaaa"], { content: "Run npm test before committing." });
+		const entries = [
+			rawMessage("raw-1", "I like tea."),
+			observationsRecordedEntry("om-obs", { observations: [obs], coversUpToId: "raw-1" }),
+			reflectionsRecordedEntry("om-ref", { reflections: [ref], coversUpToId: "om-obs" }),
+			reflectionsDroppedEntry("om-retire", { reflectionIds: ["eeeeeeeeeeee"], kind: "project-instructions", coversUpToId: "om-obs" }),
+		];
+
+		const { result, text } = await execute("eeeeeeeeeeee", entries);
+		const tui = formatRecallRenderedResultForTui(result as any, false);
+
+		expect(result.details?.reflections[0]).toMatchObject({ status: "retired", retirementKind: "project-instructions" });
+		expect(text).toContain("[eeeeeeeeeeee] [retired (covered by project instructions)] Run npm test before committing.");
+		expect(text).toContain("Reflection eeeeeeeeeeee is retired (covered by project instructions) from active memory but remains recallable.");
+		expect(tui).toContain("retired (covered by project instructions)");
+	});
 });
+

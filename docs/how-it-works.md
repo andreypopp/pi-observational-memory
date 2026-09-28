@@ -12,6 +12,7 @@ V3 is ledger-centered: memory state is reconstructed by folding V3 ledger entrie
 |---|---|
 | `turn_end` observer trigger | Maybe run the observer in the background. |
 | `turn_end` reflect/drop trigger | Maybe run the due reflector, then run dropper maintenance only after same-run successful reflection. |
+| `before_agent_start` snapshot | Record the session's context files (`systemPromptOptions.contextFiles`) for the reflector. Observe only. |
 | `agent_settled` compaction trigger | Maybe call `ctx.compact()` when idle and over `compactAfterTokens`, after Pi finishes retries and queued continuation. |
 | `session_before_compact` hook | Build the V3 compaction payload deterministically. |
 | `/om:status` | Show ledger counts, drift, progress clocks, and worker state. |
@@ -151,11 +152,12 @@ customType: "om.reflections.dropped"
 data: {
   reflectionIds: string[];
   replacedBy?: string;
+  kind?: "stale" | "duplicate" | "project-instructions"; // plain retirements only
   coversUpToId: string;
 }
 ```
 
-Retirements are tombstones for reflection ids, kept even when the reflection record is unknown or recorded later; nothing un-retires a reflection. The fold keeps every reflection record (`reflections`, `reflectionsById`) and exposes `activeReflections`, `retiredReflectionIds`, and `reflectionReplacedBy`. Observer, reflector, and dropper inputs, dropper coverage, and projections use active reflections only. Retirements do not advance any progress clock.
+Retirements are tombstones for reflection ids, kept even when the reflection record is unknown or recorded later. The only exception is kind `project-instructions`: a later `om.reflections.recorded` entry (in branch order) that contains the id re-activates it. A permanent retirement is never turned back into a reversible one. Entries without `kind` keep the pre-kind shape byte for byte. The fold keeps every reflection record (`reflections`, `reflectionsById`) and exposes `activeReflections`, `retiredReflectionIds`, `reflectionReplacedBy`, and `reflectionRetirementKind`; projections and recall apply the same re-activation rule. Observer, reflector, and dropper inputs, dropper coverage, and projections use active reflections only. Retirements do not advance any progress clock.
 
 ### Folded compaction details
 
@@ -203,8 +205,9 @@ Reflect/drop also runs on `turn_end`, but only when the observer is not due.
 6. Resolve the model only for stages that are ready to run.
 7. Fold current ledger state.
 8. If reflector is due and observation coverage exists, run the reflector. Each active observation line is annotated with current reflection coverage (`none`, `partial`, or `strong`) so the reflector can review uncovered durable facts without treating coverage as a quota.
-9. Append non-empty `om.reflections.recorded` with `coversUpToId` set to the latest observation coverage marker. Support ids are downstream dropper coverage evidence and should include all and only observations whose durable meaning is preserved with equivalent fidelity. The crystallize prompt shows active reflections only, but its duplicate check covers every recorded reflection id, retired ones included.
-10. If crystallize appended reflections, run the review (`src/agents/reviewer`, tool `tidy_reflections`) on the same resolved reflector model, with the same per-call fallback retry. It sees active reflections as `[id] (recorded YYYY-MM-DD HH:MM) [new]? content` plus active observations as evidence. Code validates every decision and reports problems back to the model: ids must be active, each id is decided once, `[new]` ids cannot be retired outright, and content must be one non-empty line. A replacement whose content hashes to a retired id or to one of its own replaced ids is rejected. A replacement whose content hashes to another active reflection retires the replaced ids with `replacedBy` set to that reflection. Accepted decisions are written with the crystallize coverage marker: one `om.reflections.recorded` entry with the replacements, one `om.reflections.dropped` entry per replacement group (with `replacedBy`), and one for plain retirements. A review failure is recorded as a review error (`review failed: …`), and crystallize output is kept. `runConsolidationPipeline(..., { forceReflection: true })` runs the reflector regardless of its clock and reviews even when crystallize records nothing.
+9. Append non-empty `om.reflections.recorded` with `coversUpToId` set to the latest observation coverage marker. Support ids are downstream dropper coverage evidence and should include all and only observations whose durable meaning is preserved with equivalent fidelity. The crystallize prompt shows active reflections only, but its duplicate check covers every recorded reflection id, retired ones included, except ids retired as `project-instructions`.
+10. If crystallize appended reflections, run the review (`src/agents/reviewer`, tool `tidy_reflections`) on the same resolved reflector model, with the same per-call fallback retry. It sees active reflections as `[id] (recorded YYYY-MM-DD HH:MM) [new]? content` plus active observations as evidence. Each plain retirement names a kind (`stale`, `duplicate`, `project-instructions`). Code validates every decision and reports problems back to the model: ids must be active, each id is decided once, `[new]` ids can be retired outright only with kind `project-instructions`, and content must be one non-empty line. A replacement whose content hashes to a retired id or to one of its own replaced ids is rejected. A replacement whose content hashes to another active reflection retires the replaced ids with `replacedBy` set to that reflection. Accepted decisions are written with the crystallize coverage marker: one `om.reflections.recorded` entry with the replacements, one `om.reflections.dropped` entry per replacement group (with `replacedBy`), and one per retirement kind for plain retirements. A review failure is recorded as a review error (`review failed: …`), and crystallize output is kept. `runConsolidationPipeline(..., { forceReflection: true })` runs the reflector regardless of its clock and reviews even when crystallize records nothing.
+Both calls get the project context block at the top of their user message: `PROJECT INSTRUCTIONS (loaded into every session of this project; reference only):` followed by `### <path>` and each file's content (the same on claude-bridge and direct models; the worker instructions stay where `workerMessages` puts them). The files come from the `before_agent_start` snapshot, from `/om:reflect`'s `ctx.getSystemPromptOptions()` refresh, or, when neither exists yet (a fresh runtime after `/reload`, or a run started with `triggerTurn`, which skips `before_agent_start`), from Pi's exported `loadProjectContextFiles({ cwd, agentDir })`. Whole files are kept within `max(20000, floor(0.1 * reflector contextWindow))` estimated tokens (or `projectContextMaxTokens`), filled from the most specific (last) file backwards; omitted files are listed as `(omitted: <path>, ~N tokens)`. With no files, or `projectContext: false`, the user message is unchanged. Each call logs `reflector.project_context` (call, source `snapshot|command|loader|none`, file count, estimated tokens, omitted paths).
 11. Only after crystallize or review recorded something in this run, check whether the folded active observation pool is over `observationsPoolTargetTokens`.
 12. If over target, run the dropper with the post-review active reflections. It computes a maximum drop count from tokens over target converted to an approximate observation count and annotates active observations with reflection coverage tiers (`none`, `partial`, `strong`) for model judgment.
 13. Append non-empty `om.observations.dropped` with `coversUpToId` set to the earlier branch position of latest observation coverage and same-run reflection coverage.
@@ -310,6 +313,7 @@ Shows:
 - active observation pool pressure against `observationsPoolTargetTokens` from folded active observations;
 - dropper state explaining whether the active pool is under target or waiting for the next successful reflection;
 - reflection pool token total;
+- `Project context: N file(s), ~T tokens`, only when the reflector would see context files;
 - passive mode;
 - worker in-flight flags;
 - last observer and reflect/drop errors.
@@ -328,7 +332,7 @@ Shows full V3 ledger truth at branch tip, without retired reflections, and attem
 
 Forces a memory pass and a full-fold compaction, so cleanup shows up in the agent's context right away. OM cannot know Pi's cut (`firstKeptEntryId`) before calling `ctx.compact()`, so the pass runs inside the compaction hook:
 
-1. The command refuses while a compaction is in flight, waits for running background consolidation, then sets a one-shot `runtime.reflectRequest` and holds `compactInFlight` so the auto-compaction trigger cannot fire. It calls `ctx.compact()` without awaiting it, because Pi's `compact()` waits for the session to go idle first.
+1. The command refuses while a compaction is in flight, waits for running background consolidation, refreshes the project context files from `ctx.getSystemPromptOptions()` when the host provides it, then sets a one-shot `runtime.reflectRequest` and holds `compactInFlight` so the auto-compaction trigger cannot fire. It calls `ctx.compact()` without awaiting it, because Pi's `compact()` waits for the session to go idle first.
 2. `session_before_compact` consumes the request before its first await. It then runs `runConsolidationPipeline` under the consolidation lock (`launchConsolidationTask`, so the `turn_end` trigger cannot launch meanwhile), with `forceObservation`, `forceReflection`, `coverageLimitId: firstKeptEntryId`, and the compaction's abort signal:
    - The observer ignores its clock and deliberate-empty backoff, and reads one chunk of source entries only through the cut.
    - Every entry the pass writes caps its `coversUpToId` at the cut, `earlierCoverageMarkerId(normal marker, firstKeptEntryId)`. The pass therefore lands in this fold, even when an earlier observer run covered entries past the cut.
@@ -346,7 +350,7 @@ The agent-facing `recall` tool accepts a 12-character lowercase hex id.
 4. Match the id against observations and reflections.
 5. For observations, mark status as `active` or `dropped`.
 6. Resolve observation source entries from `sourceEntryIds`.
-7. For reflections, mark retired ones `retired` with `replaced by [id]` when known, list the retired reflections named by `replaces`, and resolve supporting observations (active or dropped) and their sources.
+7. For reflections, mark retired ones `retired` (with the retirement kind when known, e.g. `retired (covered by project instructions)`) and `replaced by [id]` when known, list the retired reflections named by `replaces`, and resolve supporting observations (active or dropped) and their sources.
 8. Return exact evidence plus diagnostics for missing/non-source entries.
 
 Recall ignores old V2 memory by construction because it indexes only V3 ledger entry types.

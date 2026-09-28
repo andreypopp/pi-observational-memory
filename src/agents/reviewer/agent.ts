@@ -5,12 +5,19 @@ import type { Static } from "typebox";
 import { debugLog } from "../../debug-log.js";
 import { hashId } from "../../ids.js";
 import { logAgentStreamError } from "../stream-errors.js";
+import { withProjectContext } from "../project-context.js";
 import { workerMessages } from "../worker-prompt.js";
 import { resolveWorkerStreamSimple, type StreamableModelRegistry, type WorkerStreamSimple } from "../worker-stream.js";
 import { AGENT_LOOP_MAX_TOKENS, boundedMaxTokens } from "../../model-budget.js";
 import { truncateRecordContent } from "../../serialize.js";
 import { estimateStringTokens } from "../../tokens.js";
-import { observationToSummaryLine, type Observation, type Reflection } from "../../session-ledger/index.js";
+import {
+	isReflectionRetirementKind,
+	observationToSummaryLine,
+	type Observation,
+	type Reflection,
+	type ReflectionRetirementKind,
+} from "../../session-ledger/index.js";
 import { REVIEW_SYSTEM } from "./prompts.js";
 
 interface RunReflectionReviewArgs {
@@ -20,13 +27,15 @@ interface RunReflectionReviewArgs {
 	env?: Record<string, string>;
 	/** Active reflections under review. */
 	reflections: Reflection[];
-	/** Reflections recorded in this pass: they may be replaced but not retired outright. */
+	/** Reflections recorded in this pass: they may be replaced, and retired outright only as covered by project instructions. */
 	newReflectionIds: ReadonlySet<string>;
 	/** Already retired ids; a replacement must not reuse one. */
 	retiredReflectionIds: ReadonlySet<string>;
 	/** Display record time ("YYYY-MM-DD HH:MM") per reflection id. */
 	recordedAt: ReadonlyMap<string, string>;
 	observations: Observation[];
+	/** Rendered PROJECT INSTRUCTIONS block, prepended to the user message; "" or absent leaves it unchanged. */
+	projectContext?: string;
 	signal?: AbortSignal;
 	agentLoop?: typeof agentLoop;
 	maxTurns?: number;
@@ -40,18 +49,21 @@ interface RunReflectionReviewArgs {
 export type ReflectionRetirement = {
 	reflectionIds: string[];
 	replacedBy?: string;
+	/** Why plain retirements were made; absent on replacements. */
+	kind?: ReflectionRetirementKind;
 };
 
 export type ReflectionReviewResult = {
 	/** New reflections to record, each carrying the ids it replaces. */
 	replacements: Reflection[];
-	/** One group per replacement target, then one group of plain retirements. */
+	/** One group per replacement target, then one group of plain retirements per kind. */
 	retirements: ReflectionRetirement[];
 };
 
 const TidyReflectionsSchema = Type.Object({
 	retire: Type.Optional(Type.Array(Type.Object({
 		id: Type.String(),
+		kind: Type.Union([Type.Literal("stale"), Type.Literal("duplicate"), Type.Literal("project-instructions")]),
 		reason: Type.String(),
 	}))),
 	replace: Type.Optional(Type.Array(Type.Object({
@@ -88,7 +100,7 @@ export async function runReflectionReview(args: RunReflectionReviewArgs): Promis
 	const activeById = new Map(reflections.map((reflection) => [reflection.id, reflection]));
 	// Every id is decided at most once per run; replacement targets count as decided so they stay active.
 	const decided = new Set<string>();
-	const plainRetirements: string[] = [];
+	const plainRetirements: { id: string; kind?: ReflectionRetirementKind }[] = [];
 	const replacements = new Map<string, Reflection>();
 	const retirementsByTarget = new Map<string, string[]>();
 	let toolCallCount = 0;
@@ -109,13 +121,16 @@ export async function runReflectionReview(args: RunReflectionReviewArgs): Promis
 			};
 
 			for (const item of params.retire ?? []) {
-				const problem = idProblem(item.id) ?? (newReflectionIds.has(item.id) ? `${item.id} is [new] and cannot be retired outright; merge it into a replacement instead` : undefined);
+				const kind = isReflectionRetirementKind(item.kind) ? item.kind : undefined;
+				const problem = idProblem(item.id) ?? (newReflectionIds.has(item.id) && kind !== "project-instructions"
+					? `${item.id} is [new] and can be retired outright only as covered by project instructions; merge it into a replacement instead`
+					: undefined);
 				if (problem) {
 					problems.push(problem);
 					continue;
 				}
 				decided.add(item.id);
-				plainRetirements.push(item.id);
+				plainRetirements.push({ id: item.id, ...(kind ? { kind } : {}) });
 			}
 
 			for (const item of params.replace ?? []) {
@@ -171,7 +186,7 @@ export async function runReflectionReview(args: RunReflectionReviewArgs): Promis
 	};
 
 	const reflectionLines = reflections.map((reflection) => reflectionToReviewLine(reflection, recordedAt.get(reflection.id), newReflectionIds.has(reflection.id)));
-	const userText = `CURRENT REFLECTIONS:\n${joinOrEmpty(reflectionLines)}\n\nRECENT OBSERVATIONS:\n${joinOrEmpty(observations.map(observationToSummaryLine))}\n\nReview the reflections. If none needs to change, do not call the tool.`;
+	const userText = withProjectContext(args.projectContext, `CURRENT REFLECTIONS:\n${joinOrEmpty(reflectionLines)}\n\nRECENT OBSERVATIONS:\n${joinOrEmpty(observations.map(observationToSummaryLine))}\n\nReview the reflections. If none needs to change, do not call the tool.`);
 	const { system, prompts } = workerMessages(model, REVIEW_SYSTEM, userText);
 	const context: AgentContext = {
 		messages: system,
@@ -214,10 +229,13 @@ export async function runReflectionReview(args: RunReflectionReviewArgs): Promis
 	}
 	await stream.result();
 
+	// Plain retirements are grouped by kind in first-seen order; kindless ones keep the pre-kind entry shape.
+	const plainByKind = new Map<ReflectionRetirementKind | undefined, string[]>();
+	for (const { id, kind } of plainRetirements) plainByKind.set(kind, [...(plainByKind.get(kind) ?? []), id]);
 	const retirements: ReflectionRetirement[] = [
 		...Array.from(replacements.values()).map((replacement) => ({ reflectionIds: replacement.replaces!, replacedBy: replacement.id })),
 		...Array.from(retirementsByTarget, ([replacedBy, reflectionIds]) => ({ reflectionIds, replacedBy })),
-		...(plainRetirements.length > 0 ? [{ reflectionIds: plainRetirements }] : []),
+		...Array.from(plainByKind, ([kind, reflectionIds]) => (kind ? { reflectionIds, kind } : { reflectionIds })),
 	];
 	debugLog("reflector.review_result", {
 		toolCallCount,
@@ -225,6 +243,7 @@ export async function runReflectionReview(args: RunReflectionReviewArgs): Promis
 		replacementCount: replacements.size,
 		retiredCount: retirements.reduce((sum, retirement) => sum + retirement.reflectionIds.length, 0),
 		plainRetiredCount: plainRetirements.length,
+		projectInstructionsRetiredCount: plainByKind.get("project-instructions")?.length ?? 0,
 		rejectedCount,
 	});
 	return retirements.length > 0 ? { replacements: Array.from(replacements.values()), retirements } : undefined;

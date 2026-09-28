@@ -17,6 +17,17 @@ import {
 	type TestEntry,
 } from "./fixtures/session.js";
 
+function baseConfig() {
+	return {
+		observeAfterTokens: 10,
+		reflectAfterTokens: 20,
+		compactAfterTokens: 30,
+		observationsPoolMaxTokens: 40,
+		observationsPoolTargetTokens: 20,
+		passive: false,
+	};
+}
+
 function setup(args: { entries: TestEntry[]; runtime?: Partial<any>; model?: unknown; contextUsage?: unknown }) {
 	let handler: ((args: unknown, ctx: any) => Promise<void>) | undefined;
 	const pi = {
@@ -27,14 +38,7 @@ function setup(args: { entries: TestEntry[]; runtime?: Partial<any>; model?: unk
 	};
 	const runtime = {
 		ensureConfig: vi.fn(),
-		config: {
-			observeAfterTokens: 10,
-			reflectAfterTokens: 20,
-			compactAfterTokens: 30,
-			observationsPoolMaxTokens: 40,
-			observationsPoolTargetTokens: 20,
-			passive: false,
-		},
+		config: baseConfig(),
 		consolidationInFlight: false,
 		consolidationPhase: undefined,
 		compactInFlight: false,
@@ -43,6 +47,8 @@ function setup(args: { entries: TestEntry[]; runtime?: Partial<any>; model?: unk
 		lastReflectorError: undefined,
 		lastReviewError: undefined,
 		lastDropperError: undefined,
+		resolveModel: vi.fn(async () => ({ ok: false, reason: "no model" })),
+		resolveReflectorModel: vi.fn(async () => ({ ok: false, reason: "no reflector model" })),
 		...args.runtime,
 	};
 	registerStatusCommand(pi as any, runtime as any);
@@ -59,7 +65,7 @@ function setup(args: { entries: TestEntry[]; runtime?: Partial<any>; model?: unk
 		await handler!(undefined, ctx);
 		return notify.mock.calls.at(-1)?.[0] as string;
 	};
-	return { run, notify };
+	return { run, notify, runtime };
 }
 
 describe("V3 /om:status", () => {
@@ -305,4 +311,38 @@ describe("V3 /om:status", () => {
 
 		expect(output).toContain("Reflections:  2 recorded / 1 retired / 1 active / 2 visible -1\n");
 	});
+
+	it("shows the project context line only when the reflector would see files", async () => {
+		const files = [{ path: "/repo/AGENTS.md", content: "a".repeat(400) }, { path: "/repo/pkg/AGENTS.md", content: "b".repeat(400) }];
+		const withFiles = await setup({ entries: [], runtime: { projectContext: { files: files, source: "snapshot" } } }).run();
+		const capped = await setup({ entries: [], runtime: { projectContext: { files: files, source: "snapshot" }, config: { ...baseConfig(), projectContextMaxTokens: 150 } } }).run();
+		const none = await setup({ entries: [], runtime: { projectContext: { files: [], source: "snapshot" } } }).run();
+		const off = await setup({ entries: [], runtime: { projectContext: { files: files, source: "snapshot" }, config: { ...baseConfig(), projectContext: false } } }).run();
+
+		expect(withFiles).toMatch(/Project context: 2 file\(s\), ~2\d\d tokens\n/);
+		expect(capped).toMatch(/Project context: 1 file\(s\), ~1\d\d tokens \(1 omitted\)/);
+		expect(none).not.toContain("Project context");
+		expect(off).not.toContain("Project context");
+	});
+
+	it("caps project context by the window of the model the reflector resolves to", async () => {
+		// ~30k tokens: over the 20k default cap, under 10% of a 1M window.
+		const files = [{ path: "/repo/AGENTS.md", content: "a".repeat(60_000) }, { path: "/repo/pkg/AGENTS.md", content: "b".repeat(60_000) }];
+		const projectContext = { files, source: "snapshot" };
+		const wide = { ok: true, model: { contextWindow: 1_000_000 } };
+		const failed = { ok: false, reason: "unavailable" };
+		const reflectorConfig = { ...baseConfig(), reflectorModel: { provider: "p", id: "reflector" } };
+
+		const viaReflector = setup({ entries: [], runtime: { projectContext, config: reflectorConfig, resolveReflectorModel: vi.fn(async () => wide) } });
+		const viaMemoryModel = setup({ entries: [], runtime: { projectContext, config: reflectorConfig, resolveModel: vi.fn(async () => wide) } });
+		const unresolved = setup({ entries: [], runtime: { projectContext, config: reflectorConfig, resolveModel: vi.fn(async () => failed) } });
+		const noReflectorModel = setup({ entries: [], runtime: { projectContext, resolveModel: vi.fn(async () => wide), resolveReflectorModel: vi.fn(async () => wide) } });
+
+		expect(await viaReflector.run()).toMatch(/Project context: 2 file\(s\), ~30,\d{3} tokens\n/);
+		expect(await viaMemoryModel.run()).toMatch(/Project context: 2 file\(s\), ~30,\d{3} tokens\n/);
+		expect(await unresolved.run()).toMatch(/Project context: 1 file\(s\), ~15,\d{3} tokens \(1 omitted\)/);
+		expect(await noReflectorModel.run()).toMatch(/Project context: 2 file\(s\), ~30,\d{3} tokens\n/);
+		expect(noReflectorModel.runtime.resolveReflectorModel).not.toHaveBeenCalled();
+	});
 });
+

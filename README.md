@@ -293,6 +293,8 @@ on the `Next compaction` line regardless of mode.
 | `model`                     | session model | Optional memory-worker model override: `{ provider, id, thinking }`.                              |
 | `fallbackModel`             | unset         | Optional second memory-worker model: `{ provider, id, thinking }`. Used when the primary memory model fails to resolve, and to retry a worker stage once when its model call errors. |
 | `reflectorModel`            | unset         | Optional model for the reflector only: `{ provider, id, thinking }`. Falls back to the memory model when it cannot be resolved. |
+| `projectContext`            | `true`        | Shows the session's context files (AGENTS.md, CLAUDE.md, …) to both reflector calls, so reflections do not restate them and the review retires ones they cover. `false` leaves worker inputs unchanged. |
+| `projectContextMaxTokens`   | derived       | Max estimated tokens of project context per reflector call. Unset: `max(20000, floor(contextWindow * 0.1))` of the reflector model, or `20000` when unknown. Whole files; the global file is omitted first. |
 | `showWorkerNotifications`   | `true`        | Shows routine observer, reflector, and dropper progress notifications. Warnings and errors are unaffected. |
 | `passive`                   | `false`       | Disables proactive background observation, reflection, maintenance, and auto-compaction triggers. |
 | `debugLog`                  | `false`       | Writes opt-in per-session extension debug events to Pi's agent directory.                         |

@@ -1,4 +1,5 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import { refreshProjectContextFromCommand } from "../hooks/project-context.js";
 import type { Runtime } from "../runtime.js";
 import { emptyReflectReport, renderReflectReport, type ReflectRequest } from "../reflect-report.js";
 
@@ -28,6 +29,8 @@ export function registerReflectCommand(pi: ExtensionAPI, runtime: Runtime): void
 				await runtime.consolidationPromise.catch(() => undefined);
 			}
 
+			// The forced pass reviews every reflection, so give it the session's current context files.
+			refreshProjectContextFromCommand(runtime, ctx);
 			const request: ReflectRequest = { report: emptyReflectReport() };
 			runtime.reflectRequest = request;
 			const finish = () => {

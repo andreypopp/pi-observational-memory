@@ -10,6 +10,8 @@ import {
 	type Entry,
 	type Observation,
 	type Reflection,
+	type ReflectionRetirementKind,
+	type ReflectionsDroppedEntryData,
 } from "./types.js";
 
 export type FoldLedgerOptions = {
@@ -32,6 +34,10 @@ export type FoldedLedger = {
 	retiredReflectionIds: Set<string>;
 	/** Replacing reflection id per retired reflection id, for retirements that named one. */
 	reflectionReplacedBy: Map<string, string>;
+	/** Retirement kind per retired reflection id, for retirements that named one. */
+	reflectionRetirementKind: Map<string, ReflectionRetirementKind>;
+	/** Recorded reflection ids a new recording must not reuse: all but those retired as "project-instructions", which a recording re-activates. */
+	knownReflectionIds: Set<string>;
 	/** Timestamp of the entry that first recorded each reflection id, when that entry has one. */
 	reflectionRecordedAt: Map<string, string>;
 	/** All first-valid observation records by id, including dropped observations. */
@@ -46,16 +52,46 @@ function foldEndIndex(entries: Entry[], upToEntryId: string | undefined): number
 	return idx === -1 ? entries.length - 1 : idx;
 }
 
-/** Retire each id; the first retirement that names a replacement wins. */
+export type ReflectionRetirementState = {
+	retiredReflectionIds: Set<string>;
+	reflectionReplacedBy: Map<string, string>;
+	reflectionRetirementKind: Map<string, ReflectionRetirementKind>;
+};
+
+export function emptyReflectionRetirementState(): ReflectionRetirementState {
+	return { retiredReflectionIds: new Set(), reflectionReplacedBy: new Map(), reflectionRetirementKind: new Map() };
+}
+
+/**
+ * Retire each id; the first retirement that names a replacement wins. A retirement kind is kept per id, and
+ * a permanent retirement (any kind but "project-instructions", or none) is never downgraded to a reversible one.
+ */
 export function applyReflectionRetirement(
-	reflectionIds: readonly string[],
-	replacedBy: string | undefined,
-	retiredReflectionIds: Set<string>,
-	reflectionReplacedBy: Map<string, string>,
+	data: Pick<ReflectionsDroppedEntryData, "reflectionIds" | "replacedBy" | "kind">,
+	state: ReflectionRetirementState,
 ): void {
-	for (const reflectionId of reflectionIds) {
-		retiredReflectionIds.add(reflectionId);
-		if (replacedBy && !reflectionReplacedBy.has(reflectionId)) reflectionReplacedBy.set(reflectionId, replacedBy);
+	for (const reflectionId of data.reflectionIds) {
+		const permanent = state.retiredReflectionIds.has(reflectionId) && !isReversiblyRetired(reflectionId, state);
+		state.retiredReflectionIds.add(reflectionId);
+		if (!permanent) {
+			if (data.kind) state.reflectionRetirementKind.set(reflectionId, data.kind);
+			else state.reflectionRetirementKind.delete(reflectionId);
+		}
+		if (data.replacedBy && !state.reflectionReplacedBy.has(reflectionId)) state.reflectionReplacedBy.set(reflectionId, data.replacedBy);
+	}
+}
+
+/** Whether the id is retired only because project instructions covered it, so a later recording re-activates it. */
+export function isReversiblyRetired(reflectionId: string, state: Pick<ReflectionRetirementState, "reflectionRetirementKind">): boolean {
+	return state.reflectionRetirementKind.get(reflectionId) === "project-instructions";
+}
+
+/** A recording re-activates ids retired as covered by project instructions; other retirements are permanent. */
+export function reactivateRecordedReflections(reflections: readonly Reflection[], state: ReflectionRetirementState): void {
+	for (const reflection of reflections) {
+		if (!isReversiblyRetired(reflection.id, state)) continue;
+		state.retiredReflectionIds.delete(reflection.id);
+		state.reflectionRetirementKind.delete(reflection.id);
 	}
 }
 
@@ -68,15 +104,15 @@ function isCustomEntry(entry: Entry, customType: string): boolean {
  *
  * Unknown custom entries, old V2 entries, invalid V3-shaped data, and compaction details are ignored.
  * Observations and reflections use first-valid-record-wins semantics. Drops and reflection retirements
- * are tombstones and are retained even when the id is unknown at the time of folding; nothing un-retires.
+ * are tombstones and are retained even when the id is unknown at the time of folding. The only thing that
+ * un-retires is a later recording of an id retired with kind "project-instructions".
  * The first retirement that names a replacement wins.
  */
 export function foldLedger(entries: Entry[], options: FoldLedgerOptions = {}): FoldedLedger {
 	const observationsById = new Map<string, Observation>();
 	const reflectionsById = new Map<string, Reflection>();
 	const droppedObservationIds = new Set<string>();
-	const retiredReflectionIds = new Set<string>();
-	const reflectionReplacedBy = new Map<string, string>();
+	const retirement = emptyReflectionRetirementState();
 	const reflectionRecordedAt = new Map<string, string>();
 	const endIdx = foldEndIndex(entries, options.upToEntryId);
 
@@ -102,6 +138,7 @@ export function foldLedger(entries: Entry[], options: FoldLedgerOptions = {}): F
 					if (entry.timestamp) reflectionRecordedAt.set(reflection.id, entry.timestamp);
 				}
 			}
+			reactivateRecordedReflections(entry.data.reflections, retirement);
 			continue;
 		}
 
@@ -115,14 +152,16 @@ export function foldLedger(entries: Entry[], options: FoldLedgerOptions = {}): F
 
 		if (isCustomEntry(entry, OM_REFLECTIONS_DROPPED)) {
 			if (!isReflectionsDroppedData(entry.data)) continue;
-			applyReflectionRetirement(entry.data.reflectionIds, entry.data.replacedBy, retiredReflectionIds, reflectionReplacedBy);
+			applyReflectionRetirement(entry.data, retirement);
 		}
 	}
 
 	const observations = Array.from(observationsById.values());
 	const activeObservations = observations.filter((observation) => !droppedObservationIds.has(observation.id));
 	const reflections = Array.from(reflectionsById.values());
+	const { retiredReflectionIds, reflectionReplacedBy, reflectionRetirementKind } = retirement;
 	const activeReflections = reflections.filter((reflection) => !retiredReflectionIds.has(reflection.id));
+	const knownReflectionIds = new Set(reflections.map((reflection) => reflection.id).filter((id) => !isReversiblyRetired(id, retirement)));
 
 	return {
 		observations,
@@ -132,6 +171,8 @@ export function foldLedger(entries: Entry[], options: FoldLedgerOptions = {}): F
 		activeReflections,
 		retiredReflectionIds,
 		reflectionReplacedBy,
+		reflectionRetirementKind,
+		knownReflectionIds,
 		reflectionRecordedAt,
 		observationsById,
 		reflectionsById,

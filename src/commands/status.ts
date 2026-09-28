@@ -1,6 +1,8 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { observationPoolMetrics } from "../agents/dropper/pool.js";
-import { resolveCompactAfterTokens } from "../config.js";
+import { renderProjectContext } from "../agents/project-context.js";
+import { resolveCompactAfterTokens, resolveProjectContextMaxTokens } from "../config.js";
+import { resolveProjectContextFiles } from "../hooks/project-context.js";
 import type { Runtime } from "../runtime.js";
 import {
 	diffProjection,
@@ -27,6 +29,31 @@ function addedSuffix(count: number): string | undefined {
 
 function removedSuffix(count: number): string | undefined {
 	return count > 0 ? `-${count.toLocaleString()}` : undefined;
+}
+
+/**
+ * Context window of the model the reflector runs on, resolved like the reflector stage does: the reflector
+ * model when configured and usable, else the memory model (primary, then fallback). Undefined when neither resolves.
+ */
+async function reflectorContextWindow(runtime: Runtime, ctx: { model?: unknown; modelRegistry?: unknown }): Promise<number | undefined> {
+	const resolveCtx = { model: ctx.model, modelRegistry: ctx.modelRegistry, hasUI: false };
+	try {
+		let resolved = runtime.config.reflectorModel ? await runtime.resolveReflectorModel(resolveCtx) : undefined;
+		if (!resolved?.ok) resolved = await runtime.resolveModel(resolveCtx);
+		const contextWindow = resolved.ok ? (resolved.model as { contextWindow?: unknown } | undefined)?.contextWindow : undefined;
+		return typeof contextWindow === "number" ? contextWindow : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+/** "Project context: …" status line, only when the reflector would see context files. */
+async function projectContextLine(runtime: Runtime, ctx: { cwd: string; model?: unknown; modelRegistry?: unknown }): Promise<string[]> {
+	const { files } = resolveProjectContextFiles(runtime, ctx.cwd);
+	if (files.length === 0) return [];
+	const rendered = renderProjectContext(files, resolveProjectContextMaxTokens(runtime.config, await reflectorContextWindow(runtime, ctx)));
+	const omitted = rendered.omitted.length > 0 ? ` (${rendered.omitted.length} omitted)` : "";
+	return [`Project context: ${rendered.fileCount} file(s), ~${rendered.estimatedTokens.toLocaleString()} tokens${omitted}`];
 }
 
 function appendSuffixes(line: string, suffixes: (string | undefined)[]): string {
@@ -86,6 +113,7 @@ export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void 
 				"── Memory ──",
 				observationLine,
 				reflectionLine,
+				...(await projectContextLine(runtime, ctx)),
 				"",
 				"── Activity ──",
 				`Next observation: ~${obsProgress.toLocaleString()} / ${runtime.config.observeAfterTokens.toLocaleString()} tokens (${pct(obsProgress, runtime.config.observeAfterTokens)}%)`,

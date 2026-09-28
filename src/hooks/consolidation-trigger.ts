@@ -2,11 +2,13 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { runDropper } from "../agents/dropper/agent.js";
 import { observationPoolMetrics } from "../agents/dropper/pool.js";
 import { ObserverStreamError, runObserver } from "../agents/observer/agent.js";
+import { renderProjectContext } from "../agents/project-context.js";
 import { runReflector } from "../agents/reflector/agent.js";
 import { runReflectionReview } from "../agents/reviewer/agent.js";
 import { debugLog, withDebugLogContext } from "../debug-log.js";
 import type { ConsolidationReport } from "../reflect-report.js";
-import { resolveObserverChunkMaxTokens } from "../config.js";
+import { resolveObserverChunkMaxTokens, resolveProjectContextMaxTokens } from "../config.js";
+import { resolveProjectContextFiles, type ResolvedProjectContextFiles } from "./project-context.js";
 import type { ConsolidationPhase, ResolveCtx, ResolveResult, Runtime } from "../runtime.js";
 import { fmtLocal, serializeSourceAddressedBranchEntries } from "../serialize.js";
 import {
@@ -199,6 +201,30 @@ function observerChunkContextWindow(runtime: Runtime, ctx: ConsolidationCtx, res
 	if (usablePrimary === undefined) return usableFallback;
 	if (usableFallback === undefined) return usablePrimary;
 	return Math.min(usablePrimary, usableFallback);
+}
+
+/**
+ * Render the project context for one reflector call, capped for the model that call runs on,
+ * and log what it carried. "" when there are no files.
+ */
+function projectContextFor(
+	runtime: Runtime,
+	projectFiles: ResolvedProjectContextFiles,
+	worker: ResolvedModel,
+	call: "crystallize" | "review",
+): string {
+	const contextWindow = (worker.model as { contextWindow?: number } | undefined)?.contextWindow;
+	const maxTokens = resolveProjectContextMaxTokens(runtime.config, contextWindow);
+	const rendered = renderProjectContext(projectFiles.files, maxTokens);
+	debugLog("reflector.project_context", {
+		call,
+		source: projectFiles.source,
+		fileCount: rendered.fileCount,
+		estimatedTokens: rendered.estimatedTokens,
+		maxTokens,
+		omitted: rendered.omitted.map((file) => file.path),
+	});
+	return rendered.text;
 }
 
 type ModelResolver = {
@@ -575,14 +601,16 @@ async function runReflectorStage(
 	if (!resolved) return { outcome: "abort", sameRunReflections: [] };
 
 	const folded = foldLedger(entries);
+	const projectFiles = resolveProjectContextFiles(runtime, ctx.cwd);
 	const reflections = await runStageWithFallback(ctx, "reflector", resolved, resolver, (worker) => runReflector({
 		model: worker.model as any,
 		apiKey: worker.apiKey,
 		headers: worker.headers,
 		env: worker.env,
 		reflections: folded.activeReflections,
-		knownReflectionIds: new Set(folded.reflectionsById.keys()),
+		knownReflectionIds: folded.knownReflectionIds,
 		observations: folded.activeObservations,
+		projectContext: projectContextFor(runtime, projectFiles, worker, "crystallize"),
 		signal: options.signal,
 		maxTurns: runtime.config.agentMaxTurns,
 		maxOutputTokens: runtime.config.agentMaxTokens,
@@ -599,7 +627,7 @@ async function runReflectorStage(
 
 	let reviewRecorded = false;
 	if (data || options.forceReflection) {
-		const replacements = await runReviewStep(pi, runtime, ctx, resolver, observationCoverageId, new Set(sameRunReflections.map((reflection) => reflection.id)), options);
+		const replacements = await runReviewStep(pi, runtime, ctx, resolver, observationCoverageId, new Set(sameRunReflections.map((reflection) => reflection.id)), projectFiles, options);
 		if (replacements) {
 			reviewRecorded = true;
 			sameRunReflections.push(...replacements);
@@ -625,6 +653,7 @@ async function runReviewStep(
 	resolver: ModelResolver,
 	coversUpToId: string,
 	newReflectionIds: ReadonlySet<string>,
+	projectFiles: ResolvedProjectContextFiles,
 	options: ConsolidationOptions,
 ): Promise<Reflection[] | undefined> {
 	const entries = ctx.sessionManager.getBranch() as Entry[];
@@ -663,6 +692,7 @@ async function runReviewStep(
 			retiredReflectionIds: folded.retiredReflectionIds,
 			recordedAt,
 			observations: folded.activeObservations,
+			projectContext: projectContextFor(runtime, projectFiles, worker, "review"),
 			signal: options.signal,
 			maxTurns: runtime.config.agentMaxTurns,
 			maxOutputTokens: runtime.config.agentMaxTokens,
@@ -687,7 +717,7 @@ async function runReviewStep(
 		wrote = true;
 	}
 	for (const retirement of result?.retirements ?? []) {
-		const data = buildReflectionsDroppedData(retirement.reflectionIds, coversUpToId, retirement.replacedBy);
+		const data = buildReflectionsDroppedData(retirement.reflectionIds, coversUpToId, retirement.replacedBy, retirement.kind);
 		if (!data) continue;
 		appendEntry(pi, OM_REFLECTIONS_DROPPED, data);
 		if (options.report) {

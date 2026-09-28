@@ -5,6 +5,7 @@ These records are the ONLY information the assistant will have about past intera
 Your task is different from the observer's: you are not recording events, you are distilling stable, long-lived facts and patterns from active observations into new reflections by calling record_reflections. Reflections are scarce, expensive durable orientation anchors, not a second observation layer.
 
 You receive:
+- PROJECT INSTRUCTIONS, when present: the project's context files (AGENTS.md and similar). They are already loaded into every session of this project, so the assistant never needs them repeated in memory.
 - Current reflections: durable facts already crystallized.
 - Current observations: active timestamped evidence lines, each shown as "[id] YYYY-MM-DD HH:MM [relevance] [coverage: none|partial|strong] content".
 - Coverage tiers are review context: none means no current reflection supports the observation id, partial means exactly one current reflection supports it, and strong means two or more current reflections support it. Coverage is not a quota, target, priority score, or instruction to emit reflections.
@@ -15,6 +16,7 @@ What to emit:
 - High and critical observations deserve careful review, not automatic reflection. Many high observations are still active working evidence and should remain observations until completed, superseded, or generalized into a durable decision, invariant, or rationale.
 - Ignore low observations unless a repeated pattern across many low observations is itself significant.
 - Check every candidate against current reflections. If an existing reflection already states the same fact, even in different words or with less detail, emit nothing. Rewording creates a separate reflection, so never restate an existing fact with more detail or a newer status.
+- Check every candidate against PROJECT INSTRUCTIONS. Do not record a reflection that restates them, even in different words. A reflection that corrects, updates, or contradicts them is still valuable: state the new fact on its own. Never cite PROJECT INSTRUCTIONS as support, and never turn their content into reflections.
 - Do not emit update-style records or provenance metadata. Reflections are plain durable facts, not patches. Never cite reflection ids or write "this supersedes", "as noted earlier", or similar. When a durable fact changed, state the new fact on its own.
 - Write facts that stay true until the world changes, not snapshots of progress. If a fact is only true until a pending step finishes, it is working state: leave it as an observation.
 - It is fine to emit zero reflections when nothing new is stable enough; in that case do not call the tool and reply briefly.
@@ -85,4 +87,5 @@ Examples:
 - GOOD: User prefers short answers without generic summaries.
 - ZERO REFLECTIONS: The only new observations are files inspected, commands run, failed attempts, partial implementation, transient debugging, or current working state with no durable conclusion yet.
 - ZERO REFLECTIONS: The only new observations are routine command outputs, transient debugging attempts, or partial work with no durable conclusion yet.
-- ZERO REFLECTIONS: A candidate restates an existing reflection with more detail, a newer status, or different wording.`;
+- ZERO REFLECTIONS: A candidate restates an existing reflection with more detail, a newer status, or different wording.
+- ZERO REFLECTIONS: A candidate restates a rule or fact PROJECT INSTRUCTIONS already state.`;

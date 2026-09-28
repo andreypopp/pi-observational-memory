@@ -75,6 +75,16 @@ export interface Config {
 	 * reflector call is still retried once with `fallbackModel`.
 	 */
 	reflectorModel?: ConfiguredModel;
+	/**
+	 * Show the session's project context files (AGENTS.md, CLAUDE.md, …) to both reflector
+	 * calls, so reflections do not restate them. `false` leaves every worker input unchanged.
+	 */
+	projectContext: boolean;
+	/**
+	 * Maximum estimated tokens of project context the reflector sees. Unset derives the
+	 * cap from the reflector model's context window; see {@link resolveProjectContextMaxTokens}.
+	 */
+	projectContextMaxTokens?: number;
 	showWorkerNotifications: boolean;
 	passive: boolean;
 	debugLog: boolean;
@@ -90,6 +100,7 @@ export const DEFAULTS: Config = {
 	observationsPoolTargetTokens: 10_000,
 	agentMaxTurns: 16,
 	agentMaxTokens: 32_000,
+	projectContext: true,
 	showWorkerNotifications: true,
 	passive: false,
 	debugLog: false,
@@ -158,6 +169,27 @@ export function resolveObserverChunkMaxTokens(config: Config, contextWindow: num
 	return OBSERVER_CHUNK_FALLBACK_MAX_TOKENS;
 }
 
+/** Project context cap floor, and the cap when the reflector model's context window is unknown. */
+export const PROJECT_CONTEXT_MIN_MAX_TOKENS = 20_000;
+
+/** Fraction of the reflector model's context window the project context may use. */
+export const PROJECT_CONTEXT_CONTEXT_RATIO = 0.1;
+
+/**
+ * Resolve the maximum estimated tokens of project context rendered into a reflector call.
+ *
+ * An explicit `projectContextMaxTokens` wins. Otherwise the cap is
+ * `max(PROJECT_CONTEXT_MIN_MAX_TOKENS, floor(contextWindow * PROJECT_CONTEXT_CONTEXT_RATIO))`
+ * for the reflector model, or {@link PROJECT_CONTEXT_MIN_MAX_TOKENS} when its window is unknown.
+ */
+export function resolveProjectContextMaxTokens(config: Config, contextWindow: number | undefined): number {
+	if (config.projectContextMaxTokens !== undefined && config.projectContextMaxTokens > 0) return config.projectContextMaxTokens;
+	if (typeof contextWindow === "number" && Number.isFinite(contextWindow) && contextWindow > 0) {
+		return Math.max(PROJECT_CONTEXT_MIN_MAX_TOKENS, Math.floor(contextWindow * PROJECT_CONTEXT_CONTEXT_RATIO));
+	}
+	return PROJECT_CONTEXT_MIN_MAX_TOKENS;
+}
+
 const SETTINGS_KEY = "observational-memory";
 const PASSIVE_ENV = "PI_OBSERVATIONAL_MEMORY_PASSIVE";
 
@@ -220,6 +252,7 @@ function normalizeSettingsConfig(value: Record<string, unknown>): Partial<Config
 		"observationsPoolTargetTokens",
 		"agentMaxTurns",
 		"agentMaxTokens",
+		"projectContextMaxTokens",
 	] as const;
 	for (const key of numberKeys) {
 		const normalizedValue = positiveIntegerOrUndefined(value[key]);
@@ -230,6 +263,7 @@ function normalizeSettingsConfig(value: Record<string, unknown>): Partial<Config
 	}
 	const ratio = validRatioOrUndefined(value.compactAfterTokensRatio);
 	if (ratio !== undefined) normalized.compactAfterTokensRatio = ratio;
+	if (typeof value.projectContext === "boolean") normalized.projectContext = value.projectContext;
 	if (typeof value.showWorkerNotifications === "boolean") normalized.showWorkerNotifications = value.showWorkerNotifications;
 	if (typeof value.passive === "boolean") normalized.passive = value.passive;
 	if (typeof value.debugLog === "boolean") normalized.debugLog = value.debugLog;

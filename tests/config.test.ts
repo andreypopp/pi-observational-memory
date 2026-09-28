@@ -9,7 +9,7 @@ vi.mock("@earendil-works/pi-coding-agent", () => ({
 	getAgentDir: () => mock.agentDir,
 }));
 
-import { DEFAULTS, loadConfig, readEnvConfig, resolveCompactAfterTokens } from "../src/config.js";
+import { DEFAULTS, loadConfig, readEnvConfig, resolveCompactAfterTokens, resolveProjectContextMaxTokens } from "../src/config.js";
 
 function writeJson(path: string, value: unknown) {
 	mkdirSync(join(path, ".."), { recursive: true });
@@ -45,6 +45,7 @@ describe("V3 config", () => {
 			observationsPoolTargetTokens: 10000,
 			agentMaxTurns: 16,
 			agentMaxTokens: 32000,
+			projectContext: true,
 			showWorkerNotifications: true,
 			passive: false,
 			debugLog: false,
@@ -158,10 +159,33 @@ describe("V3 config", () => {
 				showWorkerNotifications: "no",
 				passive: "yes",
 				debugLog: "true",
+				projectContext: "false",
+				projectContextMaxTokens: 0,
 			},
 		});
 
 		expect(loadConfig(cwd, {})).toEqual(DEFAULTS);
+	});
+
+	it("parses the project context switch and cap", () => {
+		writeJson(join(cwd, ".pi", "settings.json"), {
+			"observational-memory": { projectContext: false, projectContextMaxTokens: 5000 },
+		});
+
+		expect(loadConfig(cwd, {})).toMatchObject({ projectContext: false, projectContextMaxTokens: 5000 });
+	});
+
+	describe("resolveProjectContextMaxTokens", () => {
+		it("uses 10% of the reflector window with a 20k floor, and 20k when the window is unknown", () => {
+			expect(resolveProjectContextMaxTokens(DEFAULTS, 1_000_000)).toBe(100_000);
+			expect(resolveProjectContextMaxTokens(DEFAULTS, 128_000)).toBe(20_000);
+			expect(resolveProjectContextMaxTokens(DEFAULTS, undefined)).toBe(20_000);
+			expect(resolveProjectContextMaxTokens(DEFAULTS, 0)).toBe(20_000);
+		});
+
+		it("lets projectContextMaxTokens override the derived cap", () => {
+			expect(resolveProjectContextMaxTokens({ ...DEFAULTS, projectContextMaxTokens: 3000 }, 1_000_000)).toBe(3000);
+		});
 	});
 
 	it("derives observation pool target from the final max when omitted", () => {

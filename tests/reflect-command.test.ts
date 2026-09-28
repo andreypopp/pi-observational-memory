@@ -111,6 +111,25 @@ describe("/om:reflect", () => {
 		expect(ctx.ui.notify).toHaveBeenLastCalledWith(expect.stringContaining("/om:reflect failed: boom"), "error");
 	});
 
+	it("refreshes project context files from the command context before compacting", async () => {
+		const { run, ctx, runtime } = setup({ config: { passive: false, compactAfterTokens: 1, projectContext: true } }) as any;
+		ctx.getSystemPromptOptions = () => ({ cwd: "/tmp/project", contextFiles: [{ path: "/tmp/project/AGENTS.md", content: "Rules." }] });
+
+		await run();
+
+		expect(runtime.projectContext).toEqual({ files: [{ path: "/tmp/project/AGENTS.md", content: "Rules." }], source: "command" });
+		expect(ctx.compact).toHaveBeenCalled();
+	});
+
+	it("keeps the existing snapshot on a host without getSystemPromptOptions", async () => {
+		const snapshot = { files: [{ path: "/tmp/project/AGENTS.md", content: "Snapshot." }], source: "snapshot" };
+		const { run, runtime } = setup({ projectContext: snapshot }) as any;
+
+		await run();
+
+		expect(runtime.projectContext).toBe(snapshot);
+	});
+
 	it("waits for a running consolidation before compacting", async () => {
 		let release!: () => void;
 		const { run, ctx } = setup({ consolidationPromise: new Promise<void>((resolve) => { release = resolve; }) });

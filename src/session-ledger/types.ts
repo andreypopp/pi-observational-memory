@@ -7,6 +7,10 @@ export const OM_FOLDED = "om.folded";
 export const RELEVANCE_VALUES = ["low", "medium", "high", "critical"] as const;
 export type Relevance = (typeof RELEVANCE_VALUES)[number];
 
+/** Why a reflection was retired outright. "project-instructions" retirements are reversible: see `foldLedger`. */
+export const REFLECTION_RETIREMENT_KINDS = ["stale", "duplicate", "project-instructions"] as const;
+export type ReflectionRetirementKind = (typeof REFLECTION_RETIREMENT_KINDS)[number];
+
 export const MEMORY_ID_PATTERN = /^[a-f0-9]{12}$/;
 
 export type Entry = {
@@ -60,6 +64,8 @@ export type ReflectionsDroppedEntryData = {
 	reflectionIds: string[];
 	/** Id of the reflection that replaced the retired ones; absent for plain retirement. */
 	replacedBy?: string;
+	/** Why the ids were retired; only on plain retirements, absent on older entries. */
+	kind?: ReflectionRetirementKind;
 	coversUpToId: string;
 };
 
@@ -78,6 +84,10 @@ export type V3MemoryCustomType =
 
 export function isRelevance(value: unknown): value is Relevance {
 	return typeof value === "string" && (RELEVANCE_VALUES as readonly string[]).includes(value);
+}
+
+export function isReflectionRetirementKind(value: unknown): value is ReflectionRetirementKind {
+	return typeof value === "string" && (REFLECTION_RETIREMENT_KINDS as readonly string[]).includes(value);
 }
 
 export function isNonEmptyString(value: unknown): value is string {
@@ -156,6 +166,7 @@ export function isObservationsDroppedData(value: unknown): value is Observations
 export function isReflectionsDroppedData(value: unknown): value is ReflectionsDroppedEntryData {
 	if (!isPlainRecord(value)) return false;
 	if (!isMemoryIdArray(value.reflectionIds) || !isNonEmptyString(value.coversUpToId)) return false;
+	if (value.kind !== undefined && (value.replacedBy !== undefined || !isReflectionRetirementKind(value.kind))) return false;
 	if (value.replacedBy === undefined) return true;
 	return isMemoryId(value.replacedBy) && !value.reflectionIds.includes(value.replacedBy);
 }
@@ -233,9 +244,12 @@ export function buildReflectionsDroppedData(
 	reflectionIds: string[],
 	coversUpToId: string,
 	replacedBy?: string,
+	kind?: ReflectionRetirementKind,
 ): ReflectionsDroppedEntryData | undefined {
-	const data: ReflectionsDroppedEntryData = replacedBy === undefined
-		? { reflectionIds, coversUpToId }
-		: { reflectionIds, replacedBy, coversUpToId };
+	const data: ReflectionsDroppedEntryData = replacedBy !== undefined
+		? { reflectionIds, replacedBy, coversUpToId }
+		: kind !== undefined
+			? { reflectionIds, kind, coversUpToId }
+			: { reflectionIds, coversUpToId };
 	return isReflectionsDroppedData(data) ? data : undefined;
 }

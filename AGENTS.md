@@ -44,7 +44,8 @@ opening messages through it; covered by `tests/worker-prompt.test.ts`.
 
 ## Reflection retirement
 
-`om.reflections.dropped` (`reflectionIds`, optional `replacedBy`) is a permanent tombstone for reflections; a
+`om.reflections.dropped` (`reflectionIds`, optional `replacedBy` or `kind`) is a permanent tombstone for reflections
+(except kind `project-instructions`, see below); a
 replacing reflection lists what it replaced in `Reflection.replaces`. `foldLedger` keeps every record in
 `reflections` and exposes `activeReflections`: every worker input, dropper coverage, status/view count and
 projection must use active reflections, while recall resolves retired ids. Projections gate retirements on the
@@ -54,6 +55,16 @@ the reflector stage only after crystallize recorded something (or with `forceRef
 rules live in code, not the prompt. Crystallize dedupes against retired ids too.
 Sessions without retirements must stay byte-for-byte unchanged (tests assert this across projection, status,
 recall and worker inputs).
+
+## Project context for the reflector
+
+Both reflector calls (crystallize and review) get the session's context files as a `PROJECT INSTRUCTIONS` block at the top
+of the user message; observer and dropper never do. Sources, in order: `before_agent_start` snapshot, `/om:reflect`'s
+guarded `ctx.getSystemPromptOptions()` refresh, else Pi's exported `loadProjectContextFiles` (`src/hooks/project-context.ts`).
+No files or `projectContext: false` must leave worker inputs byte-for-byte unchanged. Review retirements carry a `kind`;
+`project-instructions` is the one reversible retirement: a later recording of the id re-activates it in fold, projections
+and recall (`src/session-ledger/fold.ts`), and crystallize's duplicate check excludes such ids. `vitest.config.ts` points
+`PI_CODING_AGENT_DIR` at a missing dir so the loader fallback never reads the user's real files in tests.
 
 ## /om:reflect
 

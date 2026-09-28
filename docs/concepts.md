@@ -63,9 +63,9 @@ A reflection's `supportingObservationIds` are downstream dropper coverage eviden
 
 ### Reflection retirement
 
-Reflections are never edited or deleted, but they can be retired. An `om.reflections.dropped` ledger entry is a tombstone for reflection ids: plain retirement when it names no replacement, or replacement when `replacedBy` names the newer reflection, which lists the retired ids in its `replaces` field.
+Reflections are never edited or deleted, but they can be retired. An `om.reflections.dropped` ledger entry is a tombstone for reflection ids: plain retirement when it names no replacement, or replacement when `replacedBy` names the newer reflection, which lists the retired ids in its `replaces` field. A plain retirement may carry a `kind`: `stale`, `duplicate`, or `project-instructions` (the reflection only restated the project's context files).
 
-Retirement is permanent: a retired id stays retired even if its reflection record appears later, and nothing un-retires it. Retired reflections leave active memory: workers never see them, and they never count as dropper coverage. Compaction treats retirements like reflections, so they become visible to the agent only at the next full fold. Recall still resolves a retired reflection, with its replacement and supporting evidence.
+Retirement is permanent, with one exception: an id retired with kind `project-instructions` is re-activated when a later `om.reflections.recorded` entry records it again, for example after that rule was removed from AGENTS.md. Every other retired id stays retired even if its reflection record appears later. Retired reflections leave active memory: workers never see them, and they never count as dropper coverage. Compaction treats retirements like reflections, so they become visible to the agent only at the next full fold. Recall still resolves a retired reflection, with its replacement and supporting evidence.
 
 ### Drops
 
@@ -85,9 +85,11 @@ It receives an oldest-first chunk of raw/source entries, validates source ids, a
 
 The reflector runs in the reflect/drop lane from `turn_end` when its raw-token clock reaches `reflectAfterTokens` and the observer is not due.
 
-It reads active observations and active reflections, then appends durable new reflections as `om.reflections.recorded`. Reflections must cite valid supporting observation ids. It never proposes a reflection again once it has been retired.
+It reads active observations and active reflections, then appends durable new reflections as `om.reflections.recorded`. Reflections must cite valid supporting observation ids. It never proposes a reflection again once it has been retired, unless it was retired as covered by project instructions.
 
-When that crystallize run records at least one reflection, a second call, the review, looks over all active reflections: those recorded in this run are marked `[new]`, and each shows when it was recorded. Recent observations serve as evidence. The review can retire reflections outright or replace one or more with a single shorter reflection that states the current truth. `[new]` reflections can only be merged into a replacement, never retired outright. A replacement records the ids it replaces in `replaces`, and its supporting observations are the union of theirs. When a replacement's text matches an existing active reflection, the replaced ids are retired in favor of that reflection instead of recording a copy. The reflector's coverage annotations describe current support state only; this first coverage-stewardship model does not repair historical coverage on existing reflections that already missed a supporting observation id.
+Both reflector calls also see the session's project context files (AGENTS.md, CLAUDE.md, the global `~/.pi/agent/AGENTS.md`) as reference data under `PROJECT INSTRUCTIONS`. The main agent already reads those files on every call, so a reflection that restates them is paid twice. Crystallize does not record what they already say, but still records facts that correct, update, or contradict them. The observer and dropper never see them. See [`projectContext`](configuration.md#projectcontext).
+
+When that crystallize run records at least one reflection, a second call, the review, looks over all active reflections: those recorded in this run are marked `[new]`, and each shows when it was recorded. Recent observations serve as evidence. The review can retire reflections outright or replace one or more with a single shorter reflection that states the current truth. `[new]` reflections can only be merged into a replacement, never retired outright, except as covered by project instructions. Reflections whose whole durable content the project context files already state are retired with kind `project-instructions`; reflections that add to or correct those files are kept. A replacement records the ids it replaces in `replaces`, and its supporting observations are the union of theirs. When a replacement's text matches an existing active reflection, the replaced ids are retired in favor of that reflection instead of recording a copy. The reflector's coverage annotations describe current support state only; this first coverage-stewardship model does not repair historical coverage on existing reflections that already missed a supporting observation id.
 
 ### Dropper
 
@@ -178,7 +180,7 @@ Visible and full memory can differ intentionally. Background ledger work may hap
 Recall can return:
 
 - an observation, marked `active` or `dropped`;
-- a reflection plus supporting observations, marked `retired` (with its replacement, when known) if it was retired, and listing the retired reflections it replaced;
+- a reflection plus supporting observations, marked `retired` (with its retirement kind and replacement, when known, e.g. `retired (covered by project instructions)`) if it was retired, and listing the retired reflections it replaced;
 - a mixed result if an id collision exists;
 - missing/non-source diagnostics when source evidence is unavailable.
 

@@ -1,4 +1,4 @@
-import { applyReflectionRetirement } from "./fold.js";
+import { applyReflectionRetirement, emptyReflectionRetirementState, reactivateRecordedReflections, type ReflectionRetirementState } from "./fold.js";
 import {
 	isObservationsDroppedEntry,
 	isObservationsRecordedEntry,
@@ -7,6 +7,7 @@ import {
 	type Entry,
 	type Observation,
 	type Reflection,
+	type ReflectionRetirementKind,
 } from "./types.js";
 
 const SOURCE_TYPES = new Set(["message", "custom_message", "branch_summary"]);
@@ -43,6 +44,8 @@ export type RecalledReflection = {
 	status: "active" | "retired";
 	/** Replacing reflection id recorded by the retirement, when known. */
 	replacedBy?: string;
+	/** Retirement kind, when the retirement named one. */
+	retirementKind?: ReflectionRetirementKind;
 	/** First-recorded reflections named by `reflection.replaces`. */
 	replacedReflections: Reflection[];
 	missingReplacedReflectionIds: string[];
@@ -102,14 +105,12 @@ function indexLedger(entries: Entry[]): {
 	observations: IndexedObservation[];
 	reflections: IndexedReflection[];
 	droppedIds: Set<string>;
-	retiredReflectionIds: Set<string>;
-	reflectionReplacedBy: Map<string, string>;
+	retirement: ReflectionRetirementState;
 } {
 	const observations: IndexedObservation[] = [];
 	const reflections: IndexedReflection[] = [];
 	const droppedIds = new Set<string>();
-	const retiredReflectionIds = new Set<string>();
-	const reflectionReplacedBy = new Map<string, string>();
+	const retirement = emptyReflectionRetirementState();
 
 	for (let entryIndex = 0; entryIndex < entries.length; entryIndex++) {
 		const entry = entries[entryIndex];
@@ -123,6 +124,7 @@ function indexLedger(entries: Entry[]): {
 			entry.data.reflections.forEach((reflection, recordIndex) => {
 				reflections.push({ reflection, entryId: entry.id, entryIndex, recordIndex });
 			});
+			reactivateRecordedReflections(entry.data.reflections, retirement);
 			continue;
 		}
 		if (isObservationsDroppedEntry(entry)) {
@@ -130,11 +132,11 @@ function indexLedger(entries: Entry[]): {
 			continue;
 		}
 		if (isReflectionsDroppedEntry(entry)) {
-			applyReflectionRetirement(entry.data.reflectionIds, entry.data.replacedBy, retiredReflectionIds, reflectionReplacedBy);
+			applyReflectionRetirement(entry.data, retirement);
 		}
 	}
 
-	return { observations, reflections, droppedIds, retiredReflectionIds, reflectionReplacedBy };
+	return { observations, reflections, droppedIds, retirement };
 }
 
 function resolveObservationSources(entries: Entry[], observation: Observation, location: ObservationLedgerLocation): RecalledObservation {
@@ -190,8 +192,7 @@ export function recallMemorySources(entries: Entry[], memoryId: string): RecallR
 		observations: indexedObservations,
 		reflections: indexedReflections,
 		droppedIds,
-		retiredReflectionIds,
-		reflectionReplacedBy,
+		retirement: { retiredReflectionIds, reflectionReplacedBy, reflectionRetirementKind },
 	} = indexLedger(entries);
 	const directObservationMatches = indexedObservations.filter(({ observation }) => observation.id === memoryId);
 	const reflectionMatches = indexedReflections.filter(({ reflection }) => reflection.id === memoryId);
@@ -235,12 +236,15 @@ export function recallMemorySources(entries: Entry[], memoryId: string): RecallR
 	const recalledReflections: RecalledReflection[] = reflectionMatches.map(({ reflection, entryId, recordIndex }) => {
 		const replacedIds = uniqueStrings(reflection.replaces ?? []);
 		const replacedBy = reflectionReplacedBy.get(reflection.id);
+		const retired = retiredReflectionIds.has(reflection.id);
+		const retirementKind = retired ? reflectionRetirementKind.get(reflection.id) : undefined;
 		return {
 			reflection,
 			reflectionEntryId: entryId,
 			reflectionRecordIndex: recordIndex,
-			status: retiredReflectionIds.has(reflection.id) ? "retired" : "active",
+			status: retired ? "retired" : "active",
 			...(replacedBy ? { replacedBy } : {}),
+			...(retirementKind ? { retirementKind } : {}),
 			replacedReflections: replacedIds.flatMap((id) => {
 				const replaced = reflectionsById.get(id);
 				return replaced ? [replaced] : [];

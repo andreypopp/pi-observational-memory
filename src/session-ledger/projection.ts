@@ -1,3 +1,4 @@
+import { applyReflectionRetirement, emptyReflectionRetirementState, reactivateRecordedReflections } from "./fold.js";
 import {
 	OM_FOLDED,
 	isMemoryDetails,
@@ -97,7 +98,7 @@ function foldProjection(entries: Entry[], options: ProjectionFoldOptions): Proje
 	const observationsById = new Set<string>();
 	const reflectionsById = new Set<string>();
 	const droppedObservationIds = new Set<string>();
-	const retiredReflectionIds = new Set<string>();
+	const retirement = emptyReflectionRetirementState();
 
 	for (const entry of entries) {
 		if (isObservationsRecordedEntry(entry) && isCoveredAtOrBefore(entry, indexes, observationsBoundary)) {
@@ -115,6 +116,7 @@ function foldProjection(entries: Entry[], options: ProjectionFoldOptions): Proje
 				reflectionsById.add(reflection.id);
 				reflections.push(reflection);
 			}
+			reactivateRecordedReflections(entry.data.reflections, retirement);
 			continue;
 		}
 
@@ -124,13 +126,13 @@ function foldProjection(entries: Entry[], options: ProjectionFoldOptions): Proje
 		}
 
 		if (isReflectionsDroppedEntry(entry) && isCoveredAtOrBefore(entry, indexes, reflectionsBoundary)) {
-			for (const reflectionId of entry.data.reflectionIds) retiredReflectionIds.add(reflectionId);
+			applyReflectionRetirement(entry.data, retirement);
 		}
 	}
 
 	return {
 		observations: observations.filter((observation) => !droppedObservationIds.has(observation.id)),
-		reflections: reflections.filter((reflection) => !retiredReflectionIds.has(reflection.id)),
+		reflections: reflections.filter((reflection) => !retirement.retiredReflectionIds.has(reflection.id)),
 	};
 }
 

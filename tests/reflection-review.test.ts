@@ -169,4 +169,57 @@ describe("reflection review agent", () => {
 		expect(config.finishTurn({ message: { stopReason: "error" } })).toBeUndefined();
 		expect(config.finishTurn({ message: { stopReason: "stop" } })).toEqual({ action: "end" });
 	});
+
+	describe("project context", () => {
+		const PROJECT = "PROJECT INSTRUCTIONS (loaded into every session of this project; reference only):\n\n### /repo/AGENTS.md\nRun npm test.";
+
+		it("opens the user message with the project context and is unchanged without it", async () => {
+			const texts: string[] = [];
+			const loop = fakeAgentLoop((prompts) => {
+				texts.push(prompts[0].content[0].text);
+			});
+
+			await runReflectionReview({ ...baseArgs(), projectContext: PROJECT, agentLoop: loop });
+			await runReflectionReview({ ...baseArgs(), agentLoop: loop });
+			await runReflectionReview({ ...baseArgs(), projectContext: "", agentLoop: loop });
+
+			expect(texts[0]).toBe(`${PROJECT}\n\n${texts[1]}`);
+			expect(texts[1].startsWith("CURRENT REFLECTIONS:\n")).toBe(true);
+			expect(texts[2]).toBe(texts[1]);
+		});
+
+		it("tells the model to retire reflections covered by project instructions with that kind", async () => {
+			let systemPrompt = "";
+			await runReflectionReview({ ...baseArgs(), agentLoop: fakeAgentLoop((_prompts, context) => {
+				systemPrompt = context.messages[0]?.content ?? "";
+			}) });
+
+			expect(systemPrompt).toContain("\"project-instructions\"");
+			expect(systemPrompt).toContain("adds to, corrects, or contradicts PROJECT INSTRUCTIONS must be kept");
+		});
+
+		it("retires a [new] reflection outright only as covered by project instructions", async () => {
+			const { result, replies } = await review([
+				{ retire: [{ id: NEW_C.id, kind: "stale", reason: "old" }] },
+				{ retire: [{ id: NEW_C.id, kind: "project-instructions", reason: "AGENTS.md says it" }] },
+			]);
+
+			expect(replies[0]).toContain(`${NEW_C.id} is [new] and can be retired outright only as covered by project instructions`);
+			expect(result?.retirements).toEqual([{ reflectionIds: [NEW_C.id], kind: "project-instructions" }]);
+		});
+
+		it("groups plain retirements by kind in first-seen order", async () => {
+			const { result } = await review([{
+				retire: [
+					{ id: OLD_A.id, kind: "project-instructions", reason: "covered" },
+					{ id: OLD_B.id, kind: "duplicate", reason: "dup" },
+				],
+			}]);
+
+			expect(result?.retirements).toEqual([
+				{ reflectionIds: [OLD_A.id], kind: "project-instructions" },
+				{ reflectionIds: [OLD_B.id], kind: "duplicate" },
+			]);
+		});
+	});
 });

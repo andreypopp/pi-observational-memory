@@ -10,7 +10,7 @@ import {
 	type RecalledObservation,
 	type RecalledReflection,
 } from "../session-ledger/recall.js";
-import type { Observation, Reflection } from "../session-ledger/index.js";
+import type { Observation, Reflection, ReflectionRetirementKind } from "../session-ledger/index.js";
 import { renderRecallSourceEntries, renderRecallSourceEntry } from "../serialize.js";
 import { estimateEntryTokens } from "../tokens.js";
 
@@ -30,6 +30,7 @@ type ObservationDetails = Pick<Observation, "id" | "content" | "timestamp" | "re
 type ReflectionDetails = Pick<Reflection, "id" | "content" | "supportingObservationIds"> & {
 	reflectionIndex: number;
 	status?: "retired";
+	retirementKind?: ReflectionRetirementKind;
 	replacedBy?: string;
 	replaces?: Pick<Reflection, "id" | "content">[];
 	missingReplacedReflectionIds?: string[];
@@ -161,6 +162,7 @@ function reflectionDetails(match: RecalledReflection): ReflectionDetails {
 		supportingObservationIds: reflection.supportingObservationIds,
 		reflectionIndex: match.reflectionRecordIndex,
 		...(match.status === "retired" ? { status: "retired" as const } : {}),
+		...(match.retirementKind ? { retirementKind: match.retirementKind } : {}),
 		...(match.replacedBy ? { replacedBy: match.replacedBy } : {}),
 		...(match.replacedReflections.length > 0 ? { replaces: match.replacedReflections.map(({ id, content }) => ({ id, content })) } : {}),
 		...(match.missingReplacedReflectionIds.length > 0 ? { missingReplacedReflectionIds: match.missingReplacedReflectionIds } : {}),
@@ -224,14 +226,25 @@ function friendlySourceUnavailableMessage(match: RecallObservationMatchDetails):
 	return `Observation ${match.observation.id} has source entries associated, but some are unavailable on the current branch or are not source-renderable.${missing}${nonSource}`;
 }
 
+const RETIREMENT_KIND_LABELS: Record<ReflectionRetirementKind, string> = {
+	stale: "stale",
+	duplicate: "duplicate",
+	"project-instructions": "covered by project instructions",
+};
+
+/** "retired", plus the retirement kind when the retirement named one. */
+function retiredLabel(reflection: ReflectionDetails): string {
+	return reflection.retirementKind ? `retired (${RETIREMENT_KIND_LABELS[reflection.retirementKind]})` : "retired";
+}
+
 function reflectionLineText(reflection: ReflectionDetails): string {
-	const status = reflection.status === "retired" ? " [retired]" : "";
+	const status = reflection.status === "retired" ? ` [${retiredLabel(reflection)}]` : "";
 	return `[${reflection.id}]${status} ${reflection.content}`;
 }
 
 function retiredReflectionMessage(reflection: ReflectionDetails): string {
 	const replacement = reflection.replacedBy ? `; replaced by [${reflection.replacedBy}]` : "";
-	return `Reflection ${reflection.id} is retired from active memory but remains recallable${replacement}.`;
+	return `Reflection ${reflection.id} is ${retiredLabel(reflection)} from active memory but remains recallable${replacement}.`;
 }
 
 function replacedReflectionLines(reflections: ReflectionDetails[]): string[] {
@@ -392,7 +405,7 @@ function observationLine(observation: ObservationDetails): string {
 }
 
 function reflectionLine(reflection: ReflectionDetails): string {
-	return alignedRow("✓ reflection", reflection.status === "retired" ? "retired" : "", reflection.content);
+	return alignedRow("✓ reflection", reflection.status === "retired" ? retiredLabel(reflection) : "", reflection.content);
 }
 
 function replacedReflectionRows(reflection: ReflectionDetails): string[] {
@@ -440,7 +453,7 @@ function noteRows(details: RecallObservationToolDetails, sources: RecallSourceEn
 	for (const reflection of details.reflections) {
 		if (reflection.status !== "retired") continue;
 		const replacement = reflection.replacedBy ? `; replaced by ${reflection.replacedBy}` : "";
-		notes.push(noteLine("retired", `reflection ${reflection.id} is retired from active memory but remains recallable${replacement}`));
+		notes.push(noteLine("retired", `reflection ${reflection.id} is ${retiredLabel(reflection)} from active memory but remains recallable${replacement}`));
 	}
 	if (details.observations.some((match) => match.observation.status === "dropped")) notes.push(noteLine("dropped", "one or more observations are dropped from active memory but remain recallable"));
 	if (details.unavailableSupportingObservations.length > 0) notes.push(noteLine("missing support", details.unavailableSupportingObservations.map((item) => item.observationId).join(", ")));

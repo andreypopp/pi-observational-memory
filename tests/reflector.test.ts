@@ -320,3 +320,50 @@ describe("V3 reflector agent", () => {
 		await expect(runReflector({ ...baseArgs, agentLoop: loop })).resolves.toMatchObject([{ content }]);
 	});
 });
+
+describe("runReflector project context", () => {
+	const args = {
+		apiKey: "test",
+		reflections: [],
+		observations: [observation("aaaaaaaaaaaa")],
+	};
+	const PROJECT = "PROJECT INSTRUCTIONS (loaded into every session of this project; reference only):\n\n### /repo/AGENTS.md\nRun npm test.";
+
+	async function userTextFor(model: unknown, projectContext?: string) {
+		let userText = "";
+		let systemPrompt = "";
+		await runReflector({
+			...args,
+			model: model as any,
+			projectContext,
+			agentLoop: fakeAgentLoop((prompts, context) => {
+				userText = prompts[0].content[0].text;
+				systemPrompt = context.messages[0]?.content ?? "";
+			}),
+		});
+		return { userText, systemPrompt };
+	}
+
+	it("opens the user message with the project context, before CURRENT REFLECTIONS", async () => {
+		const { userText, systemPrompt } = await userTextFor({}, PROJECT);
+
+		expect(userText.startsWith(`${PROJECT}\n\nCURRENT REFLECTIONS:\n`)).toBe(true);
+		expect(systemPrompt).toContain("PROJECT INSTRUCTIONS");
+		expect(systemPrompt).toContain("Do not record a reflection that restates them");
+		expect(systemPrompt).not.toContain(PROJECT);
+	});
+
+	it("places the project context after the instructions on claude-bridge models", async () => {
+		const { userText } = await userTextFor({ baseUrl: "claude-bridge" }, PROJECT);
+
+		expect(userText).toContain(`\n\n=====\n\n${PROJECT}\n\nCURRENT REFLECTIONS:\n`);
+	});
+
+	it("leaves the user message byte-for-byte unchanged without project context", async () => {
+		const without = await userTextFor({});
+		const empty = await userTextFor({}, "");
+
+		expect(empty.userText).toBe(without.userText);
+		expect(without.userText.startsWith("CURRENT REFLECTIONS:\n")).toBe(true);
+	});
+});
