@@ -17,7 +17,7 @@ import {
 import { estimateStringTokens } from "../tokens.js";
 import { blockTokens, parseContextFile, replaceBlock, type BlockLine } from "./block.js";
 import { memoryClosure, reflectionToMemoryRecord } from "./closure.js";
-import { readMemoryRecord, writeNewMemoryFiles, type MemoryRecord } from "./store.js";
+import { listMemoryFileIds, readMemoryRecord, removeMemoryFiles, writeNewMemoryFiles, type MemoryRecord } from "./store.js";
 import { displayPath, type PromoteTarget } from "./target.js";
 
 export type PromotePlan = {
@@ -33,6 +33,8 @@ export type PromotePlan = {
 	memoryRecords: MemoryRecord[];
 	existingMemoryIds: string[];
 	missingMemoryIds: string[];
+	/** Sorted ids of `.memory/` files the new block no longer links to: removed on apply. */
+	orphanMemoryIds: string[];
 	/** Rewritten lines, recorded as new reflections. */
 	recordedReflections: Reflection[];
 	/** One retirement per rewrite, for its sources in the branch ledger. */
@@ -101,12 +103,18 @@ export function buildPromotePlan(args: {
 		if (inLedger.length > 0) replacements.push({ reflectionIds: inLedger, replacedBy: line.id });
 	}
 
-	const closure = memoryClosure(promotedRecords, {
-		reflectionsById: folded.reflectionsById,
-		observationsById: folded.observationsById,
-		sessionId,
-		memoryDir: target.memoryDir,
-	});
+	const idLines = new Set(currentLines.filter((line) => line.hasId).map((line) => line.id));
+	const keptIds = proposedLines.filter((line) => line.kind === "keep" && idLines.has(line.id)).map((line) => line.id);
+	const closure = memoryClosure(
+		promotedRecords,
+		{
+			reflectionsById: folded.reflectionsById,
+			observationsById: folded.observationsById,
+			sessionId,
+			memoryDir: target.memoryDir,
+		},
+		keptIds,
+	);
 	const promotedIds = proposedLines.filter((line) => line.kind === "promote" || line.kind === "rewrite").map((line) => line.id);
 
 	return {
@@ -120,6 +128,7 @@ export function buildPromotePlan(args: {
 		memoryRecords: closure.records,
 		existingMemoryIds: closure.existingIds,
 		missingMemoryIds: closure.missingIds,
+		orphanMemoryIds: listMemoryFileIds(target.memoryDir).filter((id) => !closure.reachableIds.has(id)),
 		recordedReflections,
 		replacements,
 		promotedIds,
@@ -129,7 +138,7 @@ export function buildPromotePlan(args: {
 
 /** Whether applying the plan would change anything. */
 export function planChangesSomething(plan: PromotePlan): boolean {
-	return plan.newContent !== (plan.originalContent ?? "") || plan.memoryRecords.length > 0 || plan.promotedIds.length > 0;
+	return plan.newContent !== (plan.originalContent ?? "") || plan.memoryRecords.length > 0 || plan.orphanMemoryIds.length > 0 || plan.promotedIds.length > 0;
 }
 
 function plural(n: number, singular: string, pluralForm = `${singular}s`): string {
@@ -149,7 +158,7 @@ function lineCounts(plan: PromotePlan): { added: number; kept: number; removed: 
 /** One line for the confirm dialog. */
 export function promoteSummary(plan: PromotePlan, cwd: string): string {
 	const { added, kept, removed } = lineCounts(plan);
-	return `${displayPath(plan.target.contextPath, cwd)}: +${added} / =${kept} / -${removed} lines (~${plan.tokens} tokens), ${plural(plan.memoryRecords.length, "new .memory file")}. Apply?`;
+	return `${displayPath(plan.target.contextPath, cwd)}: +${added} / =${kept} / -${removed} lines (~${plan.tokens} tokens), +${plan.memoryRecords.length} / -${plan.orphanMemoryIds.length} .memory files. Apply?`;
 }
 
 /** The full preview: block diff, `.memory/` files, ledger changes and budget. */
@@ -170,6 +179,9 @@ export function renderPromotePreview(plan: PromotePlan, cwd: string, maxTokens: 
 	lines.push(plan.memoryRecords.length > 0
 		? `${memoryDir}/: add ${plural(plan.memoryRecords.length, "file")}: ${plan.memoryRecords.map((record) => record.id).join(", ")}`
 		: `${memoryDir}/: no new files`);
+	if (plan.orphanMemoryIds.length > 0) {
+		lines.push(`${memoryDir}/: remove ${plural(plan.orphanMemoryIds.length, "file")} the block no longer links to: ${plan.orphanMemoryIds.join(", ")}`);
+	}
 	if (plan.existingMemoryIds.length > 0) lines.push(`Already in ${memoryDir}/: ${plan.existingMemoryIds.join(", ")}`);
 	if (plan.missingMemoryIds.length > 0) lines.push(`Not found, skipped: ${plan.missingMemoryIds.join(", ")}`);
 	const replacedCount = plan.replacements.reduce((sum, replacement) => sum + replacement.reflectionIds.length, 0);
@@ -223,11 +235,11 @@ export function stalePlanReason(plan: PromotePlan, folded: FoldedLedger, cwd: st
 	return undefined;
 }
 
-export type ApplyResult = { ok: true; memoryFilesWritten: string[] } | { ok: false; reason: string };
+export type ApplyResult = { ok: true; memoryFilesWritten: string[]; memoryFilesRemoved: string[] } | { ok: false; reason: string };
 
 /**
- * Apply a confirmed plan in order: new `.memory/` files, the context file (temp + rename), then the
- * ledger entries. Aborts without writing when the context file or the reflections changed since the preview.
+ * Apply a confirmed plan in order: new `.memory/` files, the context file (temp + rename), orphaned
+ * `.memory/` files, then the ledger entries. Aborts without writing when the context file or the reflections changed since the preview.
  */
 export function applyPromotePlan(
 	plan: PromotePlan,
@@ -240,11 +252,12 @@ export function applyPromotePlan(
 	if (stale) return { ok: false, reason: stale };
 	const memoryFilesWritten = writeNewMemoryFiles(plan.target.memoryDir, plan.memoryRecords);
 	if (plan.newContent !== (plan.originalContent ?? "")) writeFileAtomically(plan.target.contextPath, plan.newContent);
+	const memoryFilesRemoved = removeMemoryFiles(plan.target.memoryDir, plan.orphanMemoryIds);
 	const coversUpToId = latestCoverageMarkerId(entries, OM_OBSERVATIONS_RECORDED) ?? entries.at(-1)?.id;
 	if (coversUpToId) {
 		const ledger = promoteLedgerEntries(plan, coversUpToId);
 		if (ledger.recorded) appendEntry(OM_REFLECTIONS_RECORDED, ledger.recorded);
 		for (const data of ledger.dropped) appendEntry(OM_REFLECTIONS_DROPPED, data);
 	}
-	return { ok: true, memoryFilesWritten };
+	return { ok: true, memoryFilesWritten, memoryFilesRemoved };
 }

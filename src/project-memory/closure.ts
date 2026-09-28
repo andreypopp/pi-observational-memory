@@ -17,6 +17,8 @@ export type MemoryClosure = {
 	existingIds: string[];
 	/** Linked ids found neither in the branch ledger nor in `.memory/`. */
 	missingIds: string[];
+	/** Ids the promoted reflections and kept ids reach; see memoryClosure. */
+	reachableIds: Set<string>;
 };
 
 function reflectionRecord(reflection: Reflection, sessionId: string | undefined): MemoryRecord {
@@ -57,47 +59,69 @@ function storedRecord(record: NonNullable<ReturnType<typeof readMemoryRecord>>):
  * and the supporting observations of every reflection reached. Records come from the branch ledger,
  * including retired and dropped ones, or from `.memory/` when a link points only there. Promoted
  * reflections are always written as new records carrying `promotedAt`, unless their file already exists.
+ *
+ * `reachableIds` is every id reachable from the promoted reflections and `keptIds` (the block's kept id
+ * lines) over the same links, where a reflection's links are the union over its given record, the branch
+ * ledger and its `.memory/` file, so garbage collection never under-approximates. Kept ids only feed
+ * `reachableIds`: nothing reached solely through them is written or reported as existing or missing.
  */
-export function memoryClosure(promoted: readonly MemoryRecord[], sources: ClosureSources): MemoryClosure {
+export function memoryClosure(promoted: readonly MemoryRecord[], sources: ClosureSources, keptIds: readonly string[] = []): MemoryClosure {
 	const records: MemoryRecord[] = [];
 	const existingIds: string[] = [];
 	const missingIds: string[] = [];
-	const seen = new Set<string>();
-	const queue: { id: string; kind: MemoryRecord["kind"]; record?: MemoryRecord }[] = promoted.map((record) => ({ id: record.id, kind: record.kind, record }));
+	const reachableIds = new Set<string>();
+	const copied = new Set<string>();
+	const expanded = new Set<string>();
+	const storedById = new Map<string, ReturnType<typeof readMemoryRecord>>();
+	const stored = (id: string) => {
+		if (!storedById.has(id)) storedById.set(id, readMemoryRecord(sources.memoryDir, id));
+		return storedById.get(id);
+	};
+	type Item = { id: string; kind: MemoryRecord["kind"]; copy: boolean; record?: MemoryRecord };
+	const queue: Item[] = [
+		...promoted.map((record): Item => ({ id: record.id, kind: record.kind, copy: true, record })),
+		...keptIds.map((id): Item => ({ id, kind: "reflection", copy: false })),
+	];
+	const follow = (links: Pick<Reflection, "replaces" | "supportingObservationIds">, copy: boolean) => {
+		for (const id of links.replaces ?? []) queue.push({ id, kind: "reflection", copy });
+		for (const id of links.supportingObservationIds) queue.push({ id, kind: "observation", copy });
+	};
 
 	while (queue.length > 0) {
 		const item = queue.shift()!;
-		if (seen.has(item.id)) continue;
-		seen.add(item.id);
-		let record = item.record;
+		reachableIds.add(item.id);
+		const copy = item.copy && !copied.has(item.id);
+		const expand = item.kind === "reflection" && !expanded.has(item.id);
+		if (!copy && !expand) continue;
 		const onDisk = memoryFileExists(sources.memoryDir, item.id);
-		if (!record) {
-			if (item.kind === "reflection") {
-				const reflection = sources.reflectionsById.get(item.id);
-				if (reflection) record = reflectionRecord(reflection, sources.sessionId);
-			} else {
-				const observation = sources.observationsById.get(item.id);
-				if (observation) record = observationRecord(observation, sources.sessionId);
-			}
+		const ledgerReflection = item.kind === "reflection" ? sources.reflectionsById.get(item.id) : undefined;
+		const ledgerObservation = item.kind === "observation" ? sources.observationsById.get(item.id) : undefined;
+
+		if (copy) {
+			copied.add(item.id);
+			let record = item.record;
+			if (!record && ledgerReflection) record = reflectionRecord(ledgerReflection, sources.sessionId);
+			if (!record && ledgerObservation) record = observationRecord(ledgerObservation, sources.sessionId);
 			if (!record && onDisk) {
-				const stored = readMemoryRecord(sources.memoryDir, item.id);
-				if (stored?.kind === item.kind) record = storedRecord(stored);
+				const found = stored(item.id);
+				if (found?.kind === item.kind) record = storedRecord(found);
 			}
-		}
-		if (!record) {
 			if (onDisk) existingIds.push(item.id);
+			else if (record) records.push(record);
 			else missingIds.push(item.id);
-			continue;
+			if (record?.kind === "reflection") follow(record, true);
 		}
-		if (onDisk) existingIds.push(item.id);
-		else records.push(record);
-		if (record.kind === "reflection") {
-			for (const id of record.replaces ?? []) queue.push({ id, kind: "reflection" });
-			for (const id of record.supportingObservationIds) queue.push({ id, kind: "observation" });
+
+		// A given record's links were followed by the copy step above.
+		if (expand) {
+			expanded.add(item.id);
+			if (ledgerReflection) follow(ledgerReflection, false);
+			const found = onDisk ? stored(item.id) : undefined;
+			if (found?.kind === "reflection") follow(found, false);
 		}
 	}
 
-	return { records, existingIds, missingIds };
+	return { records, existingIds, missingIds, reachableIds };
 }
 
 export function reflectionToMemoryRecord(reflection: Reflection, sessionId: string | undefined, promotedAt?: string): MemoryRecord {

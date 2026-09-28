@@ -1,12 +1,13 @@
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const mocks = vi.hoisted(() => ({ params: undefined as unknown, runPromoter: undefined as any }));
+const mocks = vi.hoisted(() => ({ params: undefined as unknown, runPromoter: undefined as any, onRun: undefined as (() => void) | undefined }));
 vi.mock("../src/agents/promoter/agent.js", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("../src/agents/promoter/agent.js")>();
 	mocks.runPromoter = vi.fn(async (args: any) => {
+		mocks.onRun?.();
 		if (!mocks.params) return undefined;
 		const result = actual.validatePromotedBlock(mocks.params as any, args);
 		if ("problems" in result) throw new Error(result.problems.join("; "));
@@ -46,6 +47,7 @@ beforeEach(() => {
 	writeFileSync(join(root, "AGENTS.md"), "# Project\n\nHand-written rules.\n");
 	mocks.params = { lines: [{ content: "Fact A", fromIds: [A.id] }, { content: MERGED, fromIds: [B.id] }] };
 	mocks.runPromoter.mockClear();
+	mocks.onRun = undefined;
 });
 afterEach(() => {
 	rmSync(root, { recursive: true, force: true });
@@ -65,6 +67,24 @@ function ledger() {
 }
 
 function setup(options: { hasUI?: boolean; confirm?: () => Promise<boolean> | boolean; entries?: any[] } = {}) {
+	const events: string[] = [];
+	const loaders: { stop: () => void; stopped: boolean }[] = [];
+	const setWidget = vi.fn((key: string, content: unknown) => {
+		if (content === undefined) return void events.push(`hide ${key}`);
+		const component = typeof content === "function"
+			? content({ requestRender() {} }, { fg: (_color: string, text: string) => text })
+			: undefined;
+		if (component && typeof component.stop === "function") {
+			const loader = { stop: component.stop.bind(component), stopped: false };
+			component.stop = () => {
+				loader.stopped = true;
+				loader.stop();
+			};
+			loaders.push(loader);
+		}
+		const lines: string[] = Array.isArray(content) ? content : component.render(200);
+		events.push(`show ${key}: ${lines.join("").trim()}`);
+	});
 	let handler: ((args: unknown, ctx: any) => Promise<void>) | undefined;
 	const session = fakeSessionContext(options.entries ?? ledger());
 	const pi = {
@@ -80,12 +100,20 @@ function setup(options: { hasUI?: boolean; confirm?: () => Promise<boolean> | bo
 	const ctx = {
 		cwd: root,
 		hasUI: options.hasUI ?? true,
-		ui: { notify: vi.fn(), confirm: vi.fn(async () => (options.confirm ? options.confirm() : true)) },
+		ui: {
+			notify: vi.fn(),
+			setWidget,
+			confirm: vi.fn(async () => {
+				events.push("confirm");
+				return options.confirm ? options.confirm() : true;
+			}),
+		},
 		model: {},
 		modelRegistry: {},
 		sessionManager: { ...session.sessionManager, getSessionId: () => SESSION },
 	};
-	return { runtime, ctx, session, pi, run: () => handler!(undefined, ctx) };
+	mocks.onRun = () => events.push("model call");
+	return { runtime, ctx, session, pi, events, loaders, run: () => handler!(undefined, ctx) };
 }
 
 const agentsPath = () => join(root, "AGENTS.md");
@@ -245,6 +273,9 @@ describe("/om:promote", () => {
 		expect(content.match(new RegExp(PROMOTED_END, "g"))).toHaveLength(1);
 		expect(parseMemoryFile(readFileSync(join(root, ".memory", `${reworded}.md`), "utf8"))).toMatchObject({ replaces: [A.id], supportingObservationIds: ["aaaaaaaaaaaa"] });
 		expect(later.ctx.ui.confirm).toHaveBeenCalledWith("Promote memory?", expect.stringContaining("+1 / =0 / -2 lines"));
+		// The rewrite replaces A, so A and its evidence stay; the dropped merged line's chain goes.
+		expect(later.ctx.ui.confirm).toHaveBeenCalledWith("Promote memory?", expect.stringContaining("+1 / -5 .memory files"));
+		expect(memoryFiles()).toEqual([reworded, A.id, "aaaaaaaaaaaa"].map((id) => `${id}.md`).sort());
 		expect(later.session.appended).toEqual([
 			{ customType: "om.reflections.recorded", data: expect.objectContaining({ coversUpToId: "raw-2" }) },
 			{ customType: "om.reflections.dropped", data: { reflectionIds: [reworded], kind: "promoted", coversUpToId: "raw-2" } },
@@ -266,5 +297,125 @@ describe("/om:promote", () => {
 		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining(`linked git worktree (${linked}); the block and .memory/ go to the main worktree at ${root}`), "info");
 		expect(readFileSync(agentsPath(), "utf8")).toContain(PROMOTED_START);
 		expect(readdirSync(linked)).toEqual([".git"]);
+	});
+
+	it("keeps what kept lines reach through records only in .memory, and removes the rest", async () => {
+		const first = setup();
+		await first.run();
+		const mergedId = hashId(MERGED);
+		// A later session: the branch holds none of the promoted records; keep the merged line, drop A.
+		mocks.params = { lines: [{ keepId: mergedId }] };
+		const later = setup({ entries: [textCustomMessage("raw-2", "x")] });
+		await later.run();
+
+		expect(memoryFiles()).toEqual([mergedId, B.id, OLD.id, "bbbbbbbbbbbb", "cccccccccccc"].map((id) => `${id}.md`).sort());
+		expect(later.ctx.ui.confirm).toHaveBeenCalledWith("Promote memory?", expect.stringContaining("+0 / -2 .memory files"));
+		const preview = String(later.ctx.ui.notify.mock.calls.find((call: unknown[]) => String(call[0]).includes("preview"))![0]);
+		expect(preview).toContain(`.memory/: remove 2 files the block no longer links to: ${[A.id, "aaaaaaaaaaaa"].sort().join(", ")}`);
+		expect(later.ctx.ui.notify).toHaveBeenLastCalledWith(expect.stringContaining("removed 2 .memory file(s)"), "info");
+		expect(later.session.appended).toEqual([]);
+	});
+
+	it("keeps a hand-edited line's records by its id", async () => {
+		await setup().run();
+		const mergedId = hashId(MERGED);
+		writeFileSync(agentsPath(), readFileSync(agentsPath(), "utf8").replace("] Fact A", "] Fact A, edited by hand"));
+		mocks.params = { lines: [{ keepId: A.id }] };
+		const later = setup({ entries: [textCustomMessage("raw-2", "x")] });
+		await later.run();
+
+		expect(readFileSync(agentsPath(), "utf8")).toContain(`- [${A.id}] Fact A, edited by hand`);
+		expect(readFileSync(agentsPath(), "utf8")).not.toContain(mergedId);
+		expect(memoryFiles()).toEqual([A.id, "aaaaaaaaaaaa"].map((id) => `${id}.md`).sort());
+	});
+
+	it("applies a cleanup-only plan, leaving non-id files, subdirectories and symlinks alone", async () => {
+		await setup().run();
+		const before = memoryFiles();
+		const dir = join(root, ".memory");
+		writeFileSync(join(dir, "eeeeeeeeeeee.md"), "stray");
+		writeFileSync(join(dir, "README.md"), "readme");
+		mkdirSync(join(dir, "ffffffffffff.md"));
+		writeFileSync(join(root, "outside.md"), "outside");
+		symlinkSync(join(root, "outside.md"), join(dir, "dddddddddddd.md"));
+		const content = readFileSync(agentsPath(), "utf8");
+		mocks.params = { lines: [{ keepId: A.id }, { keepId: hashId(MERGED) }] };
+		const later = setup({ entries: [textCustomMessage("raw-2", "x")] });
+		await later.run();
+
+		expect(later.ctx.ui.confirm).toHaveBeenCalledWith("Promote memory?", expect.stringContaining("+0 / -1 .memory files"));
+		expect(readFileSync(agentsPath(), "utf8")).toBe(content);
+		expect(memoryFiles()).toEqual([...before, "README.md", "dddddddddddd.md", "ffffffffffff.md"].sort());
+		expect(readFileSync(join(root, "outside.md"), "utf8")).toBe("outside");
+		expect(later.ctx.ui.notify).toHaveBeenLastCalledWith(expect.stringContaining("removed 1 .memory file(s)"), "info");
+	});
+
+	it("removes every id file when all lines are dropped", async () => {
+		await setup().run();
+		writeFileSync(join(root, ".memory", "README.md"), "readme");
+		mocks.params = { lines: [] };
+		const later = setup({ entries: [textCustomMessage("raw-2", "x")] });
+		await later.run();
+
+		expect(later.ctx.ui.confirm).toHaveBeenCalledWith("Promote memory?", expect.stringContaining("+0 / =0 / -2 lines (~"));
+		expect(later.ctx.ui.confirm).toHaveBeenCalledWith("Promote memory?", expect.stringContaining("+0 / -7 .memory files"));
+		expect(memoryFiles()).toEqual(["README.md"]);
+	});
+
+	it("has nothing to remove without a .memory directory", async () => {
+		const { run, ctx } = setup();
+		await run();
+		expect(ctx.ui.confirm).toHaveBeenCalledWith("Promote memory?", expect.stringContaining("+7 / -0 .memory files"));
+		const preview = String(ctx.ui.notify.mock.calls.find((call: unknown[]) => String(call[0]).includes("preview"))![0]);
+		expect(preview).not.toContain("remove");
+	});
+
+	describe("status widget", () => {
+		const choosing = "show om-promote: ⠋ Promoting memory: choosing reflections… (2 active)";
+		const writing = "show om-promote: ⠋ Promoting memory: writing AGENTS.md and .memory/…";
+
+		it("spins during the model call and the apply, and is hidden for the confirm dialog", async () => {
+			const { run, events, loaders } = setup();
+			await run();
+			expect(events).toEqual([choosing, "model call", "hide om-promote", "confirm", writing, "hide om-promote"]);
+			expect(loaders.map((loader) => loader.stopped)).toEqual([true, true]);
+		});
+
+		it("is cleared on cancel, on errors and when nothing changes", async () => {
+			const cancelled = setup({ confirm: () => false });
+			await cancelled.run();
+			expect(cancelled.events).toEqual([choosing, "model call", "hide om-promote", "confirm"]);
+
+			const failing = setup();
+			mocks.onRun = () => {
+				failing.events.push("model call");
+				throw new Error("boom");
+			};
+			await failing.run();
+			expect(failing.events).toEqual([choosing, "model call", "hide om-promote"]);
+			expect(failing.ctx.ui.notify).toHaveBeenLastCalledWith(expect.stringContaining("boom"), "error");
+
+			mocks.params = undefined;
+			const nothing = setup();
+			await nothing.run();
+			expect(nothing.events).toEqual([choosing, "model call", "hide om-promote"]);
+			expect(nothing.loaders.every((loader) => loader.stopped)).toBe(true);
+
+			mocks.params = { lines: [{ content: "Fact A", fromIds: [A.id] }] };
+			const stale = setup({ confirm: () => (writeFileSync(agentsPath(), "# Edited meanwhile\n"), true) });
+			await stale.run();
+			expect(stale.events.slice(-3)).toEqual(["confirm", writing, "hide om-promote"]);
+		});
+
+		it("is never shown without an interactive session", async () => {
+			const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+			try {
+				const { run, ctx } = setup({ hasUI: false });
+				await run();
+				expect(ctx.ui.setWidget).not.toHaveBeenCalled();
+			} finally {
+				log.mockRestore();
+			}
+		});
 	});
 });

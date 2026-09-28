@@ -1,3 +1,4 @@
+import { basename } from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { renderProjectContext, type ProjectContextFile } from "../agents/project-context.js";
 import { runPromoter } from "../agents/promoter/agent.js";
@@ -24,6 +25,7 @@ import {
 } from "../project-memory/promote.js";
 import { resolvePromoteTarget, type PromoteTarget } from "../project-memory/target.js";
 import type { Runtime } from "../runtime.js";
+import { promoteStatus, type PromoteStatus } from "./promote-status.js";
 import { foldLedger, type Entry } from "../session-ledger/index.js";
 
 type NotifyLevel = "info" | "warning" | "error";
@@ -75,7 +77,7 @@ function isBusy(runtime: Runtime): boolean {
 }
 
 /** Ask the model for a new block and turn it into a plan. Undefined (after notifying) when there is nothing to do. */
-async function proposePromotion(runtime: Runtime, ctx: ExtensionCommandContext, notify: Notify): Promise<PromotePlan | undefined> {
+async function proposePromotion(runtime: Runtime, ctx: ExtensionCommandContext, notify: Notify, status: PromoteStatus): Promise<PromotePlan | undefined> {
 	const target = resolvePromoteTarget(ctx.cwd);
 	const originalContent = readContextFile(target.contextPath);
 	let parsed: ParsedContextFile;
@@ -107,6 +109,7 @@ async function proposePromotion(runtime: Runtime, ctx: ExtensionCommandContext, 
 	}
 	const contextFiles = contextFilesWithoutBlock(runtime, ctx.cwd, target, parsed);
 	notify(`Observational memory: choosing reflections to promote from ${folded.activeReflections.length} active`, "info");
+	status.show(`Promoting memory: choosing reflections… (${folded.activeReflections.length} active)`);
 	const proposal = await runStageWithFallback(consolidationCtx, "reflector", resolved, resolver, (worker) => {
 		const contextWindow = (worker.model as { contextWindow?: number } | undefined)?.contextWindow;
 		return runPromoter({
@@ -163,15 +166,18 @@ export function registerPromoteCommand(pi: ExtensionAPI, runtime: Runtime): void
 				return;
 			}
 			runtime.promoteInFlight = true;
+			const status = promoteStatus(ctx);
 			try {
 				let plan: PromotePlan | undefined;
 				try {
-					plan = await withConsolidationLock(runtime, notify, () => proposePromotion(runtime, ctx, notify));
+					plan = await withConsolidationLock(runtime, notify, () => proposePromotion(runtime, ctx, notify, status));
 				} catch (error) {
 					const message = error instanceof Error ? error.message : String(error);
 					debugLog("promote.error", { errorMessage: message });
 					notify(`Observational memory: /om:promote failed: ${message}`, "error");
 					return;
+				} finally {
+					status.hide();
 				}
 				if (!plan) return;
 
@@ -190,10 +196,12 @@ export function registerPromoteCommand(pi: ExtensionAPI, runtime: Runtime): void
 					return;
 				}
 				const confirmed = plan;
+				status.show(`Promoting memory: writing ${basename(confirmed.target.contextPath)} and .memory/…`);
 				const result = await withConsolidationLock(runtime, notify, async () => {
 					const entries = ctx.sessionManager.getBranch() as Entry[];
 					return applyPromotePlan(confirmed, entries, foldLedger(entries), (customType, data) => pi.appendEntry(customType, data), ctx.cwd);
 				});
+				status.hide();
 				if (!result.ok) {
 					notify(`Observational memory: nothing was written: ${result.reason}. Run /om:promote again`, "warning");
 					return;
@@ -204,10 +212,11 @@ export function registerPromoteCommand(pi: ExtensionAPI, runtime: Runtime): void
 					lines: confirmed.proposedLines.length,
 					tokens: confirmed.tokens,
 					memoryFilesWritten: result.memoryFilesWritten.length,
+					memoryFilesRemoved: result.memoryFilesRemoved.length,
 					promoted: confirmed.promotedIds.length,
 				});
 				notify(
-					`Observational memory: promoted ${confirmed.promotedIds.length} line(s) into ${confirmed.target.contextPath} and wrote ${result.memoryFilesWritten.length} .memory file(s). The main agent sees the new block after /reload or in a new session; commit .memory/ with the file.`,
+					`Observational memory: promoted ${confirmed.promotedIds.length} line(s) into ${confirmed.target.contextPath} , wrote ${result.memoryFilesWritten.length} and removed ${result.memoryFilesRemoved.length} .memory file(s). The main agent sees the new block after /reload or in a new session; commit .memory/ with the file.`,
 					"info",
 				);
 			} catch (error) {
@@ -215,6 +224,7 @@ export function registerPromoteCommand(pi: ExtensionAPI, runtime: Runtime): void
 				debugLog("promote.error", { errorMessage: message });
 				notify(`Observational memory: /om:promote failed: ${message}`, "error");
 			} finally {
+				status.hide();
 				runtime.promoteInFlight = false;
 			}
 		},

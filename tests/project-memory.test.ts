@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -18,9 +18,11 @@ import { memoryClosure } from "../src/project-memory/closure.js";
 import { findSessionFile, readSessionEntries } from "../src/project-memory/sessions.js";
 import {
 	findMemoryDirFor,
+	listMemoryFileIds,
 	memoryDirCandidates,
 	parseMemoryFile,
 	readMemoryRecord,
+	removeMemoryFiles,
 	renderMemoryFile,
 	writeNewMemoryFiles,
 	type MemoryRecord,
@@ -216,9 +218,81 @@ describe(".memory store", () => {
 		writeNewMemoryFiles(join(nested, ".memory"), [observationRecord]);
 		expect(findMemoryDirFor(candidates, OBS_ID)).toBe(join(nested, ".memory"));
 	});
+
+	it("lists only regular <id>.md files, and removes only those", () => {
+		const root = tempDir();
+		const dir = join(root, ".memory");
+		expect(listMemoryFileIds(dir)).toEqual([]);
+		writeNewMemoryFiles(dir, [observationRecord]);
+		writeFileSync(join(dir, "README.md"), "readme");
+		writeFileSync(join(dir, ".gitkeep"), "");
+		writeFileSync(join(dir, "ABCDEFABCDEF.md"), "upper case");
+		writeFileSync(join(dir, "aaaaaaaaaaaa.md.bak"), "backup");
+		mkdirSync(join(dir, "bbbbbbbbbbbb.md"));
+		writeFileSync(join(root, "outside.md"), "outside");
+		symlinkSync(join(root, "outside.md"), join(dir, "cccccccccccc.md"));
+
+		expect(listMemoryFileIds(dir)).toEqual([OBS_ID]);
+		expect(removeMemoryFiles(dir, [OBS_ID, "bbbbbbbbbbbb", "cccccccccccc", "dddddddddddd", "../outside"])).toEqual([OBS_ID]);
+		expect(existsSync(join(dir, `${OBS_ID}.md`))).toBe(false);
+		expect(existsSync(join(dir, "bbbbbbbbbbbb.md"))).toBe(true);
+		expect(readFileSync(join(dir, "cccccccccccc.md"), "utf8")).toBe("outside");
+		expect(readFileSync(join(root, "outside.md"), "utf8")).toBe("outside");
+		expect(existsSync(join(dir, "README.md"))).toBe(true);
+	});
+});
+
+describe("memory reachability", () => {
+	it("follows replaces chains and supporting observations through new records, the ledger and .memory", () => {
+		const dir = join(tempDir(), ".memory");
+		writeNewMemoryFiles(dir, [
+			{ kind: "reflection", id: "111111111111", content: "Old", replaces: ["000000000000"], supportingObservationIds: ["aaaaaaaaaaaa"] },
+			{ kind: "reflection", id: "000000000000", content: "Older", supportingObservationIds: ["bbbbbbbbbbbb"] },
+			{ kind: "reflection", id: "555555555555", content: "Kept", supportingObservationIds: ["eeeeeeeeeeee"] },
+		]);
+		const ledger = reflection("333333333333", ["cccccccccccc"]);
+		const obsD = observation("dddddddddddd");
+		const closure = memoryClosure(
+			[{ kind: "reflection", id: "222222222222", content: "New", replaces: ["111111111111", "333333333333"], supportingObservationIds: ["dddddddddddd"], promotedAt: "t" }],
+			{ reflectionsById: new Map([[ledger.id, ledger]]), observationsById: new Map([[obsD.id, obsD]]), memoryDir: dir },
+			["555555555555"],
+		);
+		const reachable = closure.reachableIds;
+
+		expect(Array.from(reachable).sort()).toEqual([
+			"000000000000", "111111111111", "222222222222", "333333333333", "555555555555",
+			"aaaaaaaaaaaa", "bbbbbbbbbbbb", "cccccccccccc", "dddddddddddd", "eeeeeeeeeeee",
+		]);
+	});
 });
 
 describe("memory closure", () => {
+	it("walks kept ids for reachability only", () => {
+		const dir = join(tempDir(), ".memory");
+		writeNewMemoryFiles(dir, [
+			{ kind: "reflection", id: "555555555555", content: "Kept", replaces: ["444444444444"], supportingObservationIds: ["eeeeeeeeeeee"] },
+		]);
+		const replaced = reflection("444444444444", ["ffffffffffff"]);
+		const obsA = observation("aaaaaaaaaaaa");
+		const obsF = observation("ffffffffffff");
+		const sources = {
+			reflectionsById: new Map([[replaced.id, replaced]]),
+			observationsById: new Map([[obsA.id, obsA], [obsF.id, obsF]]),
+			memoryDir: dir,
+		};
+		const promoted: MemoryRecord[] = [{ kind: "reflection", id: "222222222222", content: "New", supportingObservationIds: ["aaaaaaaaaaaa"], promotedAt: "t" }];
+		const without = memoryClosure(promoted, sources);
+		const withKept = memoryClosure(promoted, sources, ["555555555555", "666666666666"]);
+
+		expect(withKept.records).toEqual(without.records);
+		expect(withKept.existingIds).toEqual(without.existingIds);
+		expect(withKept.missingIds).toEqual(without.missingIds);
+		expect(Array.from(without.reachableIds).sort()).toEqual(["222222222222", "aaaaaaaaaaaa"]);
+		expect(Array.from(withKept.reachableIds).sort()).toEqual([
+			"222222222222", "444444444444", "555555555555", "666666666666", "aaaaaaaaaaaa", "eeeeeeeeeeee", "ffffffffffff",
+		]);
+	});
+
 	it("follows replaces chains and supporting observations, including retired and dropped records", () => {
 		const dir = join(tempDir(), ".memory");
 		const obsA = observation("aaaaaaaaaaaa");

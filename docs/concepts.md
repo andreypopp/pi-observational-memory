@@ -82,7 +82,7 @@ Durable facts promoted from observational memory. `recall <id>` shows the eviden
 
 A model call picks the facts, merges them with the block's existing lines and with the rest of AGENTS.md, and keeps the block within `promoteMaxTokens`. A line promoted unchanged keeps its reflection's id; a rewritten line is recorded as a new reflection that replaces its sources. Every promoted reflection is then retired with kind `promoted`, so it leaves active memory: the facts now reach the agent through AGENTS.md. Removing a line from the block writes nothing to the ledger.
 
-Next to the context file, `.memory/<id>.md` stores each promoted reflection and everything it links to, transitively (the reflections it replaces and the supporting observations of each): YAML frontmatter with the record's fields and pi session id, the text verbatim, and relative links. `recall` falls back to this store for ids not on the branch. The files are meant to be committed; ids are content hashes, so OM never rewrites or deletes one.
+Next to the context file, `.memory/<id>.md` stores each promoted reflection and everything it links to, transitively (the reflections it replaces and the supporting observations of each): YAML frontmatter with the record's fields and pi session id, the text verbatim, and relative links. `recall` falls back to this store for ids not on the branch. The files are meant to be committed; ids are content hashes, so OM never rewrites one. `/om:promote` removes the `<id>.md` files the new block no longer links to (listed in the preview; git history keeps them), so `.memory/` holds exactly what the block reaches.
 
 ### Drops
 

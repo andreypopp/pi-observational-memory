@@ -1,4 +1,4 @@
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, writeSync } from "node:fs";
+import { closeSync, type Dirent, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, writeSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { hashId } from "../ids.js";
 import { isMemoryId, isRelevance, type Relevance } from "../session-ledger/types.js";
@@ -169,6 +169,47 @@ export function writeNewMemoryFiles(memoryDir: string, records: readonly MemoryR
 		written.push(record.id);
 	}
 	return written;
+}
+
+function isRegularFile(path: string): boolean {
+	try {
+		return lstatSync(path).isFile();
+	} catch {
+		return false;
+	}
+}
+
+/** Ids of the regular `<id>.md` files in `memoryDir`; other names, subdirectories and symlinks are left out. */
+export function listMemoryFileIds(memoryDir: string): string[] {
+	let entries: Dirent[];
+	try {
+		entries = readdirSync(memoryDir, { withFileTypes: true });
+	} catch {
+		return [];
+	}
+	return entries
+		.filter((entry) => entry.isFile() && entry.name.endsWith(".md"))
+		.map((entry) => entry.name.slice(0, -3))
+		.filter(isMemoryId)
+		.sort();
+}
+
+/** Remove the regular `<id>.md` file of each id; one that vanished or is not a regular file is skipped. Returns the ids removed. */
+export function removeMemoryFiles(memoryDir: string, ids: readonly string[]): string[] {
+	const removed: string[] = [];
+	for (const id of ids) {
+		if (!isMemoryId(id)) continue;
+		const path = memoryFilePath(memoryDir, id);
+		if (!isRegularFile(path)) continue;
+		try {
+			rmSync(path);
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+			throw error;
+		}
+		removed.push(id);
+	}
+	return removed;
 }
 
 /** `.memory/` directories that may hold project memory for `cwd`: each ancestor's, nearest first, then `extra`. */

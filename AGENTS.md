@@ -78,7 +78,8 @@ must stay in the hook.
 
 `src/commands/promote.ts` + `src/project-memory/` + `src/agents/promoter`. Writes only between the
 `om:promoted` markers of the context file at the repo root (main worktree root from a linked worktree, see
-`project-memory/target.ts`) and adds `.memory/<id>.md` files, never rewriting existing ones. Promoted
+`project-memory/target.ts`) and adds `.memory/<id>.md` files, never rewriting existing ones; it removes the `<id>.md` files the new block no
+longer reaches (`reachableMemoryIds`, shown in the preview; git history keeps them) and nothing else. Promoted
 reflections are retired with kind `promoted`, reversible like `project-instructions` and never offered to the
 reviewer. Pi caches context files until /reload, so `runtime.contextFileOverrides` applies OM's written
 content on top of every project-context source; do not call `ctx.reload()`. Recall falls back to the nearest
