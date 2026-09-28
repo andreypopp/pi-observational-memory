@@ -6,11 +6,11 @@ import { debugLog } from "../../debug-log.js";
 import { hashId } from "../../ids.js";
 import { logAgentStreamError } from "../stream-errors.js";
 import { withProjectContext } from "../project-context.js";
+import { normalizeReflectionContent } from "../reflector/agent.js";
 import { withUserInstruction } from "../user-instruction.js";
 import { workerMessages } from "../worker-prompt.js";
 import { resolveWorkerStreamSimple, type StreamableModelRegistry, type WorkerStreamSimple } from "../worker-stream.js";
 import { AGENT_LOOP_MAX_TOKENS, boundedMaxTokens } from "../../model-budget.js";
-import { truncateRecordContent } from "../../serialize.js";
 import { estimateStringTokens } from "../../tokens.js";
 import {
 	isReflectionRetirementKind,
@@ -89,12 +89,6 @@ function joinOrEmpty(items: string[]): string {
 	return items.length ? items.join("\n") : "(none yet)";
 }
 
-function normalizeContent(content: string): string | undefined {
-	const normalized = truncateRecordContent(content.trim());
-	if (!normalized || /\r|\n/.test(normalized)) return undefined;
-	return normalized;
-}
-
 function reflectionToReviewLine(reflection: Reflection, recordedAt: string | undefined, isNew: boolean): string {
 	return `[${reflection.id}] (recorded ${recordedAt ?? "unknown"})${isNew ? " [new]" : ""} ${reflection.content}`;
 }
@@ -163,7 +157,7 @@ export async function runReflectionReview(args: RunReflectionReviewArgs): Promis
 					problems.push(`replacement rejected: ${idProblems.join(", ")}`);
 					continue;
 				}
-				const content = normalizeContent(item.content);
+				const content = normalizeReflectionContent(item.content);
 				if (!content) {
 					problems.push("replacement rejected: content must be a non-empty single line");
 					continue;

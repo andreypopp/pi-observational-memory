@@ -121,7 +121,7 @@ export function normalizeSupportingObservationIds(
 	return Array.from(seen).sort((a, b) => (allowedOrder.get(a) ?? 0) - (allowedOrder.get(b) ?? 0));
 }
 
-function normalizeReflectionContent(content: string): string | undefined {
+export function normalizeReflectionContent(content: string): string | undefined {
 	const normalized = truncateRecordContent(content.trim());
 	if (!normalized || /\r|\n/.test(normalized)) return undefined;
 	return normalized;
