@@ -196,6 +196,20 @@ describe("Runtime V3 behavior", () => {
 		expect(notify).toHaveBeenCalledWith("Observational memory: dropper failed: drop failed", "warning");
 	});
 
+	it("records but does not show failures after session shutdown", async () => {
+		const runtime = new Runtime();
+		const notify = vi.fn();
+		runtime.shutdownController.abort();
+
+		await runtime.launchConsolidationTask({ hasUI: true, ui: { notify } }, async () => {
+			throw new Error("ctx is stale");
+		});
+		expect(runtime.recordConsolidationStageError({ hasUI: true, ui: { notify } }, "observer", new Error("ctx is stale"))).toBe("ctx is stale");
+
+		expect(runtime.lastObserverError).toBe("ctx is stale");
+		expect(notify).not.toHaveBeenCalled();
+	});
+
 	it("keeps compaction flags independent", () => {
 		const runtime = new Runtime();
 		runtime.compactInFlight = true;

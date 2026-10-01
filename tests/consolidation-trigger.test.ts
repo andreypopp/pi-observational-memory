@@ -98,6 +98,7 @@ function setup(args: {
 		resolveFallbackModel: vi.fn(async () => ({ ok: false, reason: "no fallback model configured" })) as any,
 		resolveReflectorModel: vi.fn(async () => ({ ok: false, reason: "no reflector model configured" })) as any,
 		reflectorModelFailureNotified: false,
+		shutdownController: new AbortController(),
 		launchConsolidationTask: vi.fn((_ctx, work) => {
 			runtime.consolidationInFlight = true;
 			launchedWork = work;
@@ -200,6 +201,26 @@ describe("V3 consolidation trigger", () => {
 		fireAgentStart();
 
 		expect(runtime.launchConsolidationTask).toHaveBeenCalledTimes(1);
+	});
+
+	it("does not launch after session shutdown", () => {
+		const entries = [textCustomMessage("raw-1", "aaaaaaaa")];
+		const { fireAgentStart, runtime } = setup({ entries });
+		runtime.shutdownController.abort();
+
+		fireAgentStart();
+
+		expect(runtime.launchConsolidationTask).not.toHaveBeenCalled();
+	});
+
+	it("aborts the running worker on session shutdown", async () => {
+		const entries = [textCustomMessage("raw-1", "aaaaaaaa")];
+		const { fire, runLaunchedWork, runtime } = setup({ entries, reflectAfterTokens: 999 });
+
+		fire();
+		await runLaunchedWork();
+
+		expect(mockAgents.runObserver).toHaveBeenCalledWith(expect.objectContaining({ signal: runtime.shutdownController.signal }));
 	});
 
 	it("uses the shared lock when agent_start fires before turn_end", () => {
@@ -888,6 +909,22 @@ describe("V3 consolidation trigger", () => {
 				expect.stringContaining("retrying with fallback model"),
 				"warning",
 			);
+		});
+
+		it("does not retry with the fallback model once the pass is aborted", async () => {
+			const entries = [textCustomMessage("raw-1", "aaaaaaaa")];
+			const { fire, runLaunchedWork, runtime } = setup({ entries, reflectAfterTokens: 999 });
+			mockAgents.runObserver.mockImplementationOnce(async () => {
+				runtime.shutdownController.abort();
+				throw new ObserverStreamError("aborted", "aborted");
+			});
+			runtime.resolveFallbackModel.mockResolvedValueOnce({ ok: true, model: { provider: "p", id: "fallback" }, apiKey: "k" });
+
+			fire();
+			await runLaunchedWork();
+
+			expect(mockAgents.runObserver).toHaveBeenCalledTimes(1);
+			expect(runtime.resolveFallbackModel).not.toHaveBeenCalled();
 		});
 
 		it("reuses the fallback model for later stages in the same pass", async () => {

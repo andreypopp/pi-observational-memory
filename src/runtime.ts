@@ -119,6 +119,12 @@ export class Runtime {
 	consolidationPhase: ConsolidationPhase | undefined;
 	compactInFlight = false;
 	compactHookInFlight = false;
+	/**
+	 * Aborted on `session_shutdown` (reload, session switch, exit): Pi invalidates this
+	 * instance's ctx then, so a running pass can no longer write, and the next instance
+	 * picks up the same uncovered entries.
+	 */
+	readonly shutdownController = new AbortController();
 	/** One-shot /om:reflect request; the next compaction hook consumes it and runs a forced pass first. */
 	reflectRequest: ReflectRequest | undefined;
 	/** Context files from the latest `before_agent_start` snapshot or /om:reflect refresh; see hooks/project-context. */
@@ -402,6 +408,7 @@ export class Runtime {
 		if (phase === "reflector") this.lastReflectorError = message;
 		if (phase === "review") this.lastReviewError = message;
 		if (phase === "dropper") this.lastDropperError = message;
+		if (this.shutdownController.signal.aborted) return message;
 		if (ctx.hasUI && ctx.ui) ctx.ui.notify(`Observational memory: ${phase} failed: ${message}`, "warning");
 		return message;
 	}
@@ -420,7 +427,7 @@ export class Runtime {
 				await work();
 			} catch (error) {
 				errorMessage = error instanceof Error ? error.message : String(error);
-				if (hasUI && ui) ui.notify(`Observational memory: ${label} failed: ${errorMessage}`, "warning");
+				if (hasUI && ui && !this.shutdownController.signal.aborted) ui.notify(`Observational memory: ${label} failed: ${errorMessage}`, "warning");
 			} finally {
 				onFinally(errorMessage);
 			}

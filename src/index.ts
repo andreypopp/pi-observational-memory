@@ -12,6 +12,7 @@ import { registerRecallTool } from "./tools/recall-observation.js";
 
 export default function observationalMemory(pi: ExtensionAPI) {
 	const runtime = new Runtime();
+	pi.on("session_shutdown", () => runtime.shutdownController.abort());
 
 	registerProjectContextSnapshot(pi, runtime);
 	registerConsolidationTrigger(pi, runtime);

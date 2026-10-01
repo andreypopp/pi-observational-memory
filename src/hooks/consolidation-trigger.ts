@@ -343,11 +343,13 @@ export async function runStageWithFallback<T>(
 	resolved: ResolvedModel,
 	resolver: ModelResolver,
 	work: (model: ResolvedModel) => Promise<T>,
+	signal?: AbortSignal,
 ): Promise<T> {
 	try {
 		return await work(resolved);
 	} catch (primaryError) {
-		if (resolved.fallbackUsed === true) throw primaryError;
+		// An aborted stage failed on purpose; a fallback call would only be aborted too.
+		if (resolved.fallbackUsed === true || signal?.aborted) throw primaryError;
 		const fallback = await resolver.resolveFallback(stage);
 		if (!fallback) throw primaryError;
 		const message = primaryError instanceof Error ? primaryError.message : String(primaryError);
@@ -388,7 +390,7 @@ function debugSessionMetadata(ctx: ConsolidationCtx): { sessionId?: string; sess
 function maybeLaunchConsolidation(pi: ExtensionAPI, runtime: Runtime, ctx: ConsolidationCtx): void {
 	runtime.ensureConfig(ctx.cwd);
 	if (runtime.config.passive === true) return;
-	if (runtime.consolidationInFlight) return;
+	if (runtime.consolidationInFlight || runtime.shutdownController.signal.aborted) return;
 
 	const entries = ctx.sessionManager.getBranch() as Entry[];
 	if (!anyStageDue(entries, runtime, realContextTokens(ctx))) return;
@@ -411,7 +413,7 @@ function maybeLaunchConsolidation(pi: ExtensionAPI, runtime: Runtime, ctx: Conso
 		...sessionMetadata,
 		runId,
 	}, async () => {
-		await runConsolidationPipeline(pi, runtime, consolidationCtx);
+		await runConsolidationPipeline(pi, runtime, consolidationCtx, { signal: runtime.shutdownController.signal });
 	}));
 }
 
@@ -560,7 +562,7 @@ async function runObserverStage(
 			maxOutputTokens: runtime.config.agentMaxTokens,
 			thinkingLevel: workerThinkingLevel(runtime, worker),
 			modelRegistry: ctx.modelRegistry,
-		}));
+		}), options.signal);
 	} catch (error) {
 		if (error instanceof ObserverStreamError) {
 			// API/stream failure is not a clean empty (#32): surface it as a real
@@ -640,7 +642,7 @@ async function runReflectorStage(
 		maxOutputTokens: runtime.config.agentMaxTokens,
 		thinkingLevel: workerThinkingLevel(runtime, worker),
 		modelRegistry: ctx.modelRegistry,
-	}));
+	}), options.signal);
 	const sameRunReflections: Reflection[] = [];
 	const data = reflections ? buildReflectionsRecordedData(reflections, observationCoverageId) : undefined;
 	if (data) {
@@ -727,7 +729,7 @@ async function runReviewStep(
 			thinkingLevel: workerThinkingLevel(runtime, worker),
 			modelRegistry: ctx.modelRegistry,
 			...(grounding ? { grounding: groundingReviewArgs(grounding, ctx.cwd) } : {}),
-		}));
+		}), options.signal);
 	} catch (error) {
 		debugLog("reflector.review_error", {
 			errorMessage: runtime.recordConsolidationStageError(ctx, "review", error),
@@ -846,7 +848,7 @@ async function runDropperStage(
 		maxOutputTokens: runtime.config.agentMaxTokens,
 		thinkingLevel: workerThinkingLevel(runtime, worker),
 		modelRegistry: ctx.modelRegistry,
-	}));
+	}), options.signal);
 	const coversUpToId = capCoverage(entries, earlierCoverageMarkerId(entries, observationCoverageId, sameRunReflectionCoverageId), options);
 	const data = coversUpToId && droppedIds ? buildObservationsDroppedData(droppedIds, coversUpToId) : undefined;
 	debugLog("dropper.append", {
